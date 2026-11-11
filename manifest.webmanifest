@@ -4,6 +4,7 @@
   "description": "Salva i tuoi luoghi del cuore, ritrovali sulla mappa e cercali in un attimo. Funziona anche offline.",
   "lang": "it",
   "dir": "ltr",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

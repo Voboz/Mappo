@@ -86,8 +86,12 @@
         if (value == null) continue;
         if (key === 'class') el.className = value;
         else if (key === 'text') el.textContent = value;
-        else if (key === 'html') el.innerHTML = value;
-        else if (key === 'style' && typeof value === 'object') Object.assign(el.style, value);
+        else if (key === 'style' && typeof value === 'object') {
+          for (const prop of Object.keys(value)) {
+            if (prop.startsWith('--')) el.style.setProperty(prop, value[prop]);
+            else el.style[prop] = value[prop];
+          }
+        }
         else if (key === 'dataset' && typeof value === 'object') Object.assign(el.dataset, value);
         else if (key.startsWith('on') && typeof value === 'function') el.addEventListener(key.slice(2).toLowerCase(), value);
         else el.setAttribute(key, value);
@@ -118,10 +122,21 @@
   }
 
   function readJSON(key) {
+    let raw = null;
     try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : null;
+      raw = localStorage.getItem(key);
     } catch (_) {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      // Conserva una copia del dato corrotto prima che una scrittura lo sovrascriva.
+      try {
+        localStorage.setItem(key + '.corrupt-' + Date.now(), raw);
+      } catch (_) { /* quota esaurita: nulla da fare */ }
+      showToast('Dati locali danneggiati: ho salvato una copia di sicurezza', { tone: 'error', duration: 8000 });
       return null;
     }
   }
@@ -136,9 +151,9 @@
     }
   }
 
-  function savePlaces() { writeJSON(STORAGE.places, state.places); }
-  function saveCategories() { writeJSON(STORAGE.categories, state.categories); }
-  function saveSettings() { writeJSON(STORAGE.settings, state.settings); }
+  function savePlaces() { return writeJSON(STORAGE.places, state.places); }
+  function saveCategories() { return writeJSON(STORAGE.categories, state.categories); }
+  function saveSettings() { return writeJSON(STORAGE.settings, state.settings); }
 
   function fold(text) {
     return String(text || '')
@@ -239,14 +254,20 @@
     };
   }
 
-  function sanitizePlace(raw) {
+  function parseCoordinate(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && value.trim() !== '') return Number(value.trim());
+    return NaN;
+  }
+
+  function sanitizePlace(raw, categories = state.categories) {
     if (!raw || typeof raw !== 'object') return null;
-    const lat = Number(raw.lat);
-    const lng = Number(raw.lng);
+    const lat = parseCoordinate(raw.lat);
+    const lng = parseCoordinate(raw.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
     const name = String(raw.name || '').trim().slice(0, 120) || 'Luogo senza nome';
-    const categoryId = state.categories.some((c) => c.id === raw.categoryId) ? raw.categoryId : 'altro';
+    const categoryId = categories.some((c) => c.id === raw.categoryId) ? raw.categoryId : 'altro';
     return {
       id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim().slice(0, 64) : uid(),
       name,
@@ -270,9 +291,10 @@
     state.categories = cats.filter((c) => (seen.has(c.id) ? false : seen.add(c.id)));
 
     const storedPlaces = readJSON(STORAGE.places);
+    const seenPlaces = new Set();
     state.places = (Array.isArray(storedPlaces) ? storedPlaces : [])
-      .map(sanitizePlace)
-      .filter(Boolean);
+      .map((raw) => sanitizePlace(raw))
+      .filter((place) => place && (seenPlaces.has(place.id) ? false : seenPlaces.add(place.id)));
 
     const settings = readJSON(STORAGE.settings);
     state.settings = settings && typeof settings === 'object' ? settings : {};
@@ -414,7 +436,17 @@
     const visible = new Set(getFilteredPlaces().map((p) => p.id));
     for (const [id, marker] of state.markers) {
       const el = marker.getElement();
-      if (el) el.classList.toggle('is-hidden', !visible.has(id));
+      if (!el) continue;
+      const show = visible.has(id);
+      el.classList.toggle('is-hidden', !show);
+      if (show) {
+        el.setAttribute('tabindex', '0');
+        el.removeAttribute('aria-hidden');
+      } else {
+        marker.closePopup();
+        el.setAttribute('tabindex', '-1');
+        el.setAttribute('aria-hidden', 'true');
+      }
     }
   }
 
@@ -458,7 +490,7 @@
     card.appendChild(h('div', { class: 'popup-tools' },
       tool('Modifica', 'i-edit', () => startEditPlace(place)),
       tool('Condividi', 'i-share', () => sharePlace(place)),
-      tool('Elimina', 'i-trash', () => confirmDelete(place, false), 'danger')
+      tool('Elimina', 'i-trash', () => confirmDelete(place), 'danger')
     ));
 
     return card;
@@ -665,7 +697,7 @@
 
   function openOverlay(kind, onClose) {
     if (overlays.some((o) => o.kind === kind)) return;
-    overlays.push({ kind, onClose });
+    overlays.push({ kind, onClose, focus: document.activeElement });
     if (historyOk) {
       try {
         history.pushState({ overlay: kind }, '');
@@ -684,6 +716,8 @@
     } else {
       overlays.pop();
       top.onClose();
+      syncOverlayState();
+      focusIfVisible(top.focus);
     }
   }
 
@@ -712,23 +746,54 @@
   window.addEventListener('popstate', () => {
     const entry = overlays.pop();
     if (entry) entry.onClose();
+    syncOverlayState();
+    if (entry) focusIfVisible(entry.focus);
   });
 
+  // Mantiene coerenti visibilità, inert e focus trap degli overlay.
+  function syncOverlayState() {
+    const top = overlays.length ? overlays[overlays.length - 1].kind : null;
+    const drawer = $('drawer');
+    const sheet = $('sheet');
+    const drawerOpen = drawer.classList.contains('open');
+    const sheetOpen = sheet.classList.contains('open');
+
+    drawer.inert = !(drawerOpen && top === 'drawer');
+    sheet.inert = !(sheetOpen && top === 'sheet');
+
+    const picking = $('app').classList.contains('picking');
+    const blockBackground = top !== null && !picking;
+    for (const el of [$('map'), $('offlineBadge'), document.querySelector('.topbar'), document.querySelector('.map-fabs')]) {
+      if (el) el.inert = blockBackground;
+    }
+
+    $('scrim').classList.toggle('show', drawerOpen || sheetOpen);
+  }
+
+  function focusIfVisible(el) {
+    if (!el || !document.contains(el) || typeof el.focus !== 'function') return;
+    if (el.closest('[inert]')) return;
+    if (typeof el.checkVisibility === 'function') {
+      if (!el.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true })) return;
+    } else if (el.offsetParent === null) {
+      return;
+    }
+    el.focus({ preventScroll: true });
+  }
+
   function updateScrim() {
-    const needed = $('drawer').classList.contains('open') || $('sheet').classList.contains('open');
-    $('scrim').classList.toggle('show', needed);
+    syncOverlayState();
   }
 
   /* ----------------------------- Drawer ------------------------------ */
 
-  function showDrawer(entry) {
+  function showDrawer() {
     const drawer = $('drawer');
     drawer.classList.add('open');
     drawer.inert = false;
     drawer.setAttribute('aria-hidden', 'false');
     $('btnMenu').setAttribute('aria-expanded', 'true');
     updateScrim();
-    return entry;
   }
 
   function hideDrawer() {
@@ -747,7 +812,13 @@
     }
     openOverlay('drawer', hideDrawer);
     showDrawer();
-    if (focusSearch) setTimeout(() => $('searchInput').focus({ preventScroll: true }), 320);
+    if (focusSearch) {
+      setTimeout(() => $('searchInput').focus({ preventScroll: true }), 320);
+    } else {
+      setTimeout(() => {
+        if ($('drawer').classList.contains('open')) $('btnCloseDrawer').focus({ preventScroll: true });
+      }, 320);
+    }
   }
 
   /* --------------------------- Bottom sheet -------------------------- */
@@ -786,6 +857,7 @@
       lat: Number.isFinite(lat) ? lat : center.lat,
       lng: Number.isFinite(lng) ? lng : center.lng,
       address,
+      moved: false,
     };
 
     $('placeForm').reset();
@@ -808,7 +880,7 @@
     if (!place) return;
     map.closePopup();
     state.editingId = place.id;
-    state.draft = { lat: place.lat, lng: place.lng, address: place.address || '' };
+    state.draft = { lat: place.lat, lng: place.lng, address: place.address || '', moved: false };
     $('placeForm').reset();
     $('nameError').hidden = true;
     $('gmapsError').hidden = true;
@@ -866,7 +938,7 @@
   }
 
   function setDraftCoords(lat, lng, address = '') {
-    state.draft = { lat, lng, address };
+    state.draft = { lat, lng, address, moved: true };
     updateDraftUI();
     geocodeSeq++;
   }
@@ -891,7 +963,16 @@
     return clean.join(', ').slice(0, 300);
   }
 
-  async function reverseGeocode(lat, lng) {
+  let geocodeChain = Promise.resolve();
+
+  // Serializza le richieste: evita che due geocodifiche concorrenti aggirino il rate limit.
+  function reverseGeocode(lat, lng) {
+    const task = geocodeChain.then(() => reverseGeocodeNow(lat, lng));
+    geocodeChain = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  async function reverseGeocodeNow(lat, lng) {
     const wait = Math.max(0, 1100 - (Date.now() - lastGeocodeAt));
     if (wait) await sleep(wait);
     lastGeocodeAt = Date.now();
@@ -950,6 +1031,7 @@
     }
     updatePickCoords();
     map.on('move', updatePickCoords);
+    syncOverlayState();
   }
 
   function resetPickUI() {
@@ -957,6 +1039,7 @@
     $('crosshair').hidden = true;
     $('pickBar').hidden = true;
     if (map) map.off('move', updatePickCoords);
+    syncOverlayState();
   }
 
   function exitPickMode() {
@@ -1031,14 +1114,31 @@
 
     if (wasEditing) {
       place = getPlace(state.editingId);
-      if (!place) return;
+      if (!place) {
+        showToast('Questo luogo non è più disponibile', { tone: 'error' });
+        closeSheet();
+        return;
+      }
+      const previous = {
+        name: place.name,
+        categoryId: place.categoryId,
+        note: place.note,
+        lat: place.lat,
+        lng: place.lng,
+        address: place.address,
+        updatedAt: place.updatedAt,
+      };
       place.name = name;
       place.categoryId = categoryId;
       place.note = note;
       place.lat = state.draft.lat;
       place.lng = state.draft.lng;
-      if (state.draft.address) place.address = state.draft.address;
+      place.address = state.draft.address || (state.draft.moved ? '' : place.address);
       place.updatedAt = Date.now();
+      if (!savePlaces()) {
+        Object.assign(place, previous);
+        return;
+      }
     } else {
       place = {
         id: uid(),
@@ -1052,15 +1152,16 @@
         updatedAt: Date.now(),
       };
       state.places.push(place);
+      if (!savePlaces()) {
+        state.places.pop();
+        return;
+      }
     }
 
     state.settings.lastCategory = categoryId;
     saveSettings();
-    savePlaces();
     closeSheet();
-    renderMarkers();
-    renderChips();
-    renderList();
+    renderAll();
 
     const token = ++flyToken;
     map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
@@ -1074,7 +1175,7 @@
     if (!place.address) geocodePlaceAfterSave(place);
   }
 
-  function confirmDelete(place, fromSheet) {
+  function confirmDelete(place) {
     const body = h('div', {},
       h('p', {}, 'Stai per rimuovere ', h('strong', { text: place.name }), ' dai tuoi luoghi.'),
       h('p', { text: 'Subito dopo potrai annullare con il pulsante nel messaggio.' })
@@ -1084,41 +1185,34 @@
       body,
       actions: [
         { label: 'Annulla', kind: 'ghost' },
-        { label: 'Elimina', kind: 'danger', onClick: () => doDelete(place.id, fromSheet) },
+        { label: 'Elimina', kind: 'danger', onClick: () => doDelete(place.id) },
       ],
     });
   }
 
-  function doDelete(id, fromSheet) {
+  function doDelete(id) {
     const index = state.places.findIndex((p) => p.id === id);
     if (index === -1) return;
     const [removed] = state.places.splice(index, 1);
-    savePlaces();
-    map.closePopup();
-
-    if (fromSheet) {
-      closeSheet();
-      setTimeout(() => {
-        renderMarkers();
-        renderChips();
-        renderList();
-      }, 10);
-    } else {
-      renderMarkers();
-      renderChips();
-      renderList();
+    if (!savePlaces()) {
+      state.places.splice(index, 0, removed);
+      return;
     }
+    map.closePopup();
+    renderAll();
 
     showToast('Luogo eliminato', {
       tone: 'error',
       duration: 6000,
       actionLabel: 'Annulla',
       onAction: () => {
+        const snapshot = state.places.slice();
         state.places.push(removed);
-        savePlaces();
-        renderMarkers();
-        renderChips();
-        renderList();
+        if (!savePlaces()) {
+          state.places = snapshot;
+          return;
+        }
+        renderAll();
         showToast('Luogo ripristinato', { tone: 'success' });
       },
     });
@@ -1134,13 +1228,24 @@
       return { error: 'I link brevi non sono supportati: apri il link, poi copia l\'indirizzo completo.' };
     }
 
-    const patterns = [
-      /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/,
-      /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/,
-      /[?&](?:q|query|ll|center|destination|daddr)=(-?\d{1,3}(?:\.\d+)?)(?:,|%2C|\+| )\s*(-?\d{1,3}(?:\.\d+)?)/i,
-      /geo:(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i,
-      /^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/,
-    ];
+    const isUrl = /^(https?:\/\/|geo:)/i.test(text);
+    const isGoogle = isUrl
+      ? /(^|\.)google\.[a-z.]+\//i.test(text) || /google\./i.test(text)
+      : /google\.[a-z.]+\/maps/i.test(text);
+
+    const patterns = [];
+    if (isGoogle) {
+      patterns.push(
+        /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/,
+        /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/,
+        /[?&](?:q|query|ll|center|destination|daddr)=(-?\d{1,3}(?:\.\d+)?)(?:,|%2C|\+| )\s*(-?\d{1,3}(?:\.\d+)?)/i,
+        /geo:(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i
+      );
+    } else if (/^geo:/i.test(text)) {
+      patterns.push(/geo:(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i);
+    }
+    // Coordinate incollate a mano: "45.4642, 9.1900" (virgola o punto e virgola).
+    patterns.push(/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
 
     for (const pattern of patterns) {
       const match = text.match(pattern);
@@ -1152,7 +1257,11 @@
       return { lat, lng, name: extractPlaceName(text) };
     }
 
-    return { error: 'Coordinate non riconosciute. Incolla un link completo di Google Maps.' };
+    return {
+      error: isUrl
+        ? 'Coordinate non riconosciute in questo link. Incolla un link completo di Google Maps.'
+        : 'Coordinate non riconosciute. Incolla un link completo di Google Maps o "lat, lng".',
+    };
   }
 
   function extractPlaceName(text) {
@@ -1174,7 +1283,7 @@
     $('modalTitle').textContent = title;
     const bodyEl = $('modalBody');
     bodyEl.textContent = '';
-    if (typeof body === 'string') bodyEl.innerHTML = body;
+    if (typeof body === 'string') bodyEl.textContent = body;
     else if (body) bodyEl.appendChild(body);
 
     const actionsEl = $('modalActions');
@@ -1196,6 +1305,7 @@
 
     modal.hidden = false;
     openOverlay('modal', hideModal);
+    syncOverlayState();
     if (firstButton) setTimeout(() => firstButton.focus(), 60);
   }
 
@@ -1203,6 +1313,7 @@
     $('modal').hidden = true;
     $('modalBody').textContent = '';
     $('modalActions').textContent = '';
+    syncOverlayState();
   }
 
   function openNewCategoryModal() {
@@ -1265,7 +1376,10 @@
             }
             const category = { id: 'cat-' + uid().slice(0, 8), name: name.slice(0, 40), color: selectedColor, icon: selectedEmoji, custom: true };
             state.categories.push(category);
-            saveCategories();
+            if (!saveCategories()) {
+              state.categories.pop();
+              return false;
+            }
             renderCategorySelect(category.id);
             renderChips();
             renderList();
@@ -1288,6 +1402,11 @@
     $('toastText').textContent = message;
     toast.classList.remove('success', 'error');
     if (tone) toast.classList.add(tone);
+
+    const toastIconUse = $('toastIcon') && $('toastIcon').querySelector('use');
+    if (toastIconUse) {
+      toastIconUse.setAttribute('href', tone === 'error' ? '#i-alert' : tone === 'success' ? '#i-check' : '#i-info');
+    }
 
     const action = $('toastAction');
     if (actionLabel && onAction) {
@@ -1354,6 +1473,11 @@
   }
 
   function importBackupFile(file) {
+    const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+    if (file.size > MAX_IMPORT_BYTES) {
+      showToast('File troppo grande: il limite è 5 MB', { tone: 'error' });
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       let data;
@@ -1376,36 +1500,57 @@
 
   function applyImport(data, rawPlaces) {
     const incomingCats = !Array.isArray(data) && Array.isArray(data.categories)
-      ? data.categories.map(makeCategory).filter(Boolean)
+      ? data.categories.map((raw) => makeCategory(raw)).filter(Boolean)
       : [];
 
-    const withCats = () => {
-      for (const cat of incomingCats) {
-        if (!state.categories.some((c) => c.id === cat.id)) state.categories.push(cat);
-      }
-    };
-    if (incomingCats.length) withCats();
+    // Valida i luoghi contro le categorie esistenti + quelle del backup,
+    // senza però applicare subito queste ultime allo stato (l'utente può annullare).
+    const knownCatIds = new Set(state.categories.map((c) => c.id));
+    const availableCats = state.categories.concat(incomingCats.filter((cat) => !knownCatIds.has(cat.id)));
 
-    const incoming = rawPlaces.map(sanitizePlace).filter(Boolean);
+    const sanitized = rawPlaces.map((raw) => sanitizePlace(raw, availableCats)).filter(Boolean);
+    const seenIds = new Set();
+    const incoming = sanitized.filter((place) => (seenIds.has(place.id) ? false : seenIds.add(place.id)));
+    const discarded = rawPlaces.length - incoming.length;
+
     if (incoming.length === 0) {
       showToast('Il backup non contiene luoghi validi', { tone: 'error' });
       return;
     }
 
+    const applyCats = () => {
+      for (const cat of incomingCats) {
+        if (!state.categories.some((c) => c.id === cat.id)) state.categories.push(cat);
+      }
+    };
+
+    const snapshotCategories = state.categories.slice();
+    const snapshotPlaces = state.places.slice();
+    const placeKey = (p) => fold(p.name) + '|' + p.lat.toFixed(5) + '|' + p.lng.toFixed(5);
+
     const finish = (added, mode) => {
-      saveCategories();
-      savePlaces();
-      renderMarkers();
-      renderChips();
-      renderList();
+      if (!saveCategories() || !savePlaces()) {
+        state.categories = snapshotCategories;
+        state.places = snapshotPlaces;
+        renderAll();
+        return;
+      }
+      renderAll();
       const bounds = L.latLngBounds(state.places.map((p) => [p.lat, p.lng]));
       if (bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: 14 });
-      showToast(mode === 'replace'
-        ? 'Backup ripristinato: ' + state.places.length + ' luoghi'
-        : 'Aggiunti ' + added + (added === 1 ? ' luogo' : ' luoghi'), { tone: 'success' });
+      let message = mode === 'replace'
+        ? 'Backup ripristinato: ' + state.places.length + (state.places.length === 1 ? ' luogo' : ' luoghi')
+        : 'Aggiunti ' + added + (added === 1 ? ' luogo' : ' luoghi');
+      if (discarded > 0) {
+        message += discarded === 1
+          ? ' · 1 voce ignorata'
+          : ' · ' + discarded + ' voci ignorate';
+      }
+      showToast(message, { tone: 'success' });
     };
 
     if (state.places.length === 0) {
+      applyCats();
       state.places = incoming;
       finish(incoming.length, 'replace');
       return;
@@ -1414,7 +1559,12 @@
     const body = h('div', {},
       h('p', {}, 'Il backup contiene ', h('strong', { text: String(incoming.length) }),
         incoming.length === 1 ? ' luogo.' : ' luoghi.'),
-      h('p', { text: 'Puoi unirli ai luoghi già salvati oppure sostituire tutto con il contenuto del backup.' })
+      h('p', { text: 'Puoi unirli ai luoghi già salvati oppure sostituire tutto con il contenuto del backup.' }),
+      discarded > 0
+        ? h('p', { class: 'field-error' }, discarded === 1
+          ? '1 voce ignorata perché non valida.'
+          : discarded + ' voci ignorate perché non valide.')
+        : null
     );
 
     showModal({
@@ -1426,13 +1576,22 @@
           label: 'Unisci',
           kind: 'soft',
           onClick: () => {
-            const existing = new Set(state.places.map((p) => p.id));
+            applyCats();
+            const existingIds = new Set(state.places.map((p) => p.id));
+            const existingKeys = new Set(state.places.map(placeKey));
             let added = 0;
             for (const place of incoming) {
-              if (existing.has(place.id)) place.id = uid();
-              existing.add(place.id);
+              const key = placeKey(place);
+              if (existingKeys.has(key)) continue;
+              if (existingIds.has(place.id)) place.id = uid();
+              existingIds.add(place.id);
+              existingKeys.add(key);
               state.places.push(place);
               added++;
+            }
+            if (added === 0) {
+              showToast('Nessun nuovo luogo da importare');
+              return false;
             }
             finish(added, 'merge');
           },
@@ -1441,8 +1600,8 @@
           label: 'Sostituisci',
           kind: 'primary',
           onClick: () => {
-            const dedup = new Set();
-            state.places = incoming.filter((p) => (dedup.has(p.id) ? false : dedup.add(p.id)));
+            applyCats();
+            state.places = incoming.slice();
             finish(state.places.length, 'replace');
           },
         },
@@ -1454,7 +1613,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Luoghi del cuore' }), ' · versione 1.0'),
+      h('p', {}, h('strong', { text: 'Luoghi del cuore' }), ' · versione 1.0.2'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: state.places.length + (state.places.length === 1 ? ' luogo salvato.' : ' luoghi salvati.') })
     );
@@ -1490,12 +1649,14 @@
           label: 'Cancella tutto',
           kind: 'danger',
           onClick: () => {
+            const previous = state.places;
             state.places = [];
-            savePlaces();
+            if (!savePlaces()) {
+              state.places = previous;
+              return false;
+            }
             map.closePopup();
-            renderMarkers();
-            renderChips();
-            renderList();
+            renderAll();
             showToast('Tutti i luoghi sono stati cancellati');
           },
         },
@@ -1567,26 +1728,36 @@
   function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
     let reloadRequested = false;
+    let promptedWorker = null;
+
+    const promptReload = (worker) => {
+      if (!worker || promptedWorker === worker) return;
+      promptedWorker = worker;
+      showToast('Nuova versione disponibile', {
+        duration: 9000,
+        actionLabel: 'Ricarica',
+        onAction: () => {
+          reloadRequested = true;
+          worker.postMessage({ type: 'SKIP_WAITING' });
+        },
+      });
+    };
 
     window.addEventListener('load', async () => {
       try {
         const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-        reg.addEventListener('updatefound', () => {
-          const worker = reg.installing;
+        const watchWorker = (worker) => {
           if (!worker) return;
-          worker.addEventListener('statechange', () => {
-            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
-              showToast('Nuova versione disponibile', {
-                duration: 9000,
-                actionLabel: 'Ricarica',
-                onAction: () => {
-                  reloadRequested = true;
-                  worker.postMessage({ type: 'SKIP_WAITING' });
-                },
-              });
-            }
-          });
-        });
+          const check = () => {
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) promptReload(worker);
+          };
+          check();
+          worker.addEventListener('statechange', check);
+        };
+        // L'update può essere già stato rilevato prima che questo codice parta.
+        if (reg.waiting) promptReload(reg.waiting);
+        watchWorker(reg.installing);
+        reg.addEventListener('updatefound', () => watchWorker(reg.installing));
       } catch (_) { /* offline o contesto non sicuro */ }
     });
 
@@ -1687,7 +1858,9 @@
     $('btnNewCategory').addEventListener('click', () => openNewCategoryModal());
     $('btnDeletePlace').addEventListener('click', () => {
       const place = getPlace(state.editingId);
-      if (place) confirmDelete(place, true);
+      if (!place) return;
+      // Chiude prima il foglio, poi apre la conferma: evita che resti aperto sul luogo eliminato.
+      closeOverlayThen('sheet', () => confirmDelete(place));
     });
 
     $('btnUseGps').addEventListener('click', async () => {

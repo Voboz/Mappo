@@ -9,7 +9,7 @@
   --surface-3: #e8efee;
   --ink: #0f172a;
   --ink-2: #41505f;
-  --ink-3: #6b7b8a;
+  --ink-3: #5a6a78;
   --line: #dde6e4;
   --primary: #0d9488;
   --primary-700: #0f766e;
@@ -99,6 +99,10 @@ button { cursor: pointer; }
   background: #dfe9e7;
   outline: none;
 }
+.leaflet-container:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
 
 .leaflet-control-attribution {
   font-size: 10px !important;
@@ -114,6 +118,10 @@ button { cursor: pointer; }
 .leaflet-bottom.leaflet-left {
   bottom: calc(16px + var(--safe-bottom));
   left: 12px;
+}
+.leaflet-bottom.leaflet-right {
+  bottom: calc(4px + var(--safe-bottom));
+  right: 0;
 }
 .leaflet-control-zoom {
   border: 0 !important;
@@ -172,7 +180,7 @@ button { cursor: pointer; }
   display: grid;
   place-items: center;
   color: #fff;
-  background: linear-gradient(140deg, #14b8a6, #0f766e);
+  background: linear-gradient(140deg, #0f766e, #115e59);
   box-shadow: 0 4px 10px rgba(13, 148, 136, .35);
 }
 .brand-mark .icon { width: 17px; height: 17px; }
@@ -275,7 +283,7 @@ button { cursor: pointer; }
 .fab-light.busy .icon { animation: spin-pulse 1.1s ease-in-out infinite; }
 
 .fab-primary {
-  background: linear-gradient(140deg, #14b8a6, #0f766e);
+  background: linear-gradient(140deg, #0f766e, #115e59);
   color: #fff;
   box-shadow: 0 12px 26px rgba(13, 148, 136, .42), 0 3px 8px rgba(15, 23, 42, .18);
 }
@@ -429,10 +437,10 @@ button { cursor: pointer; }
   border: 0;
   background: transparent;
   outline: none;
-  font-size: 15.5px;
+  font-size: 16px;
   color: var(--ink);
 }
-.searchbox input::placeholder { color: #8a99a7; }
+.searchbox input::placeholder { color: #5f6f7d; }
 .searchbox input::-webkit-search-cancel-button { display: none; }
 
 .clear-btn {
@@ -692,7 +700,6 @@ button { cursor: pointer; }
   box-shadow: var(--shadow-lg);
   transform: translateY(103%);
   transition: transform .34s cubic-bezier(.22, 1, .36, 1);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
   overflow: hidden;
 }
 .sheet.open .sheet-card { transform: none; }
@@ -753,7 +760,7 @@ button { cursor: pointer; }
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
-.field input::placeholder, .field textarea::placeholder, .input-row input::placeholder { color: #93a2ae; }
+.field input::placeholder, .field textarea::placeholder, .input-row input::placeholder { color: #5f6f7d; }
 .field input:focus, .field textarea:focus, .field select:focus, .input-row input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 4px rgba(13, 148, 136, .12);
@@ -863,7 +870,7 @@ button { cursor: pointer; }
 
 .btn.primary {
   color: #fff;
-  background: linear-gradient(140deg, #14b8a6, #0f766e);
+  background: linear-gradient(140deg, #0f766e, #115e59);
   box-shadow: 0 7px 18px rgba(13, 148, 136, .3);
 }
 .btn.primary:hover { box-shadow: 0 9px 22px rgba(13, 148, 136, .4); }
@@ -920,7 +927,7 @@ button { cursor: pointer; }
 .input-row input {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: 16px;
   padding: 9px 12px;
   border-radius: 10px;
 }
@@ -1389,6 +1396,11 @@ button { cursor: pointer; }
   .topbar-title h1 { font-size: 14px; }
   .sheet-actions .btn { padding: 0 11px; }
   .drawer { width: 92vw; }
+}
+
+@media (max-height: 480px) {
+  .drawer { overflow-y: auto; }
+  .drawer-head { padding-top: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

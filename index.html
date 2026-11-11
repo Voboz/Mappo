@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org; connect-src 'self' https://nominatim.openstreetmap.org; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <title>Luoghi del cuore</title>
   <meta name="description" content="Salva i tuoi luoghi del cuore, ritrovali sulla mappa e portali sempre con te. Funziona anche offline.">
   <meta name="theme-color" content="#0d9488">
@@ -44,7 +45,7 @@
   </svg>
 
   <div id="app">
-    <div id="map" role="application" aria-label="Mappa dei luoghi salvati"></div>
+    <div id="map" role="region" aria-label="Mappa dei luoghi salvati"></div>
 
     <header class="topbar">
       <button id="btnMenu" class="icon-btn" aria-label="Apri elenco e ricerca" aria-expanded="false" aria-controls="drawer">
@@ -254,9 +255,9 @@
       </div>
     </div>
 
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+    <div id="toast" class="toast" hidden>
       <svg id="toastIcon" class="icon" aria-hidden="true"><use href="#i-info"/></svg>
-      <span id="toastText"></span>
+      <span id="toastText" role="status" aria-live="polite"></span>
       <button id="toastAction" type="button" hidden></button>
     </div>
 
