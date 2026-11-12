@@ -1,20 +1,30 @@
 /* ============================================================
    Service worker — funzionamento offline
    ------------------------------------------------------------
-   - App shell (HTML, CSS, JS, Leaflet, icone): aggiornata dalla
-     rete quando disponibile, con fallback immediato in cache
+   - App shell (HTML, CSS, JS, Leaflet, MapLibre, icone):
+     aggiornata dalla rete quando disponibile, con fallback
+     immediato in cache
    - Pagine: network-first con fallback in cache
-   - Tessere della mappa: cache-first con cache limitata
+   - Librerie vendor: cache-first (cambiano solo a ogni release)
+   - Stile, TileJSON, sprite e font della mappa: cache-first con
+     rivalidazione in background
+   - Tessere della mappa: cache-first con cache limitata, che non
+     sfratta mai le risorse di piano di controllo
    ------------------------------------------------------------
    L'update non forza l'attivazione: il nuovo worker resta in
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.0.2';
+const VERSION = 'v1.6.0';
 const SHELL_CACHE = 'luoghi-shell-' + VERSION;
 const TILE_CACHE = 'luoghi-tiles-' + VERSION;
-const MAX_TILES = 600;
+const MAX_TILES = 800;
 const NETWORK_TIMEOUT = 3500;
+
+// Risorse di "piano di controllo" della mappa (stile, TileJSON, sprite, font):
+// senza queste MapLibre non può costruire la mappa, quindi non devono mai
+// essere sfrattate dalla cache delle tessere e vanno rivalidate dalla rete.
+const CRITICAL_MAP_RE = /\/styles\/|\/planet$|\/sprites\/|\/fonts\//;
 
 const APP_SHELL = [
   './',
@@ -29,6 +39,10 @@ const APP_SHELL = [
   './vendor/leaflet/images/marker-shadow.png',
   './vendor/leaflet/images/layers.png',
   './vendor/leaflet/images/layers-2x.png',
+  './vendor/maplibre/maplibre-gl-csp.js',
+  './vendor/maplibre/maplibre-gl-csp-worker.js',
+  './vendor/maplibre/maplibre-gl.css',
+  './vendor/maplibre/leaflet-maplibre-gl.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
@@ -40,11 +54,24 @@ self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL_CACHE);
     const results = await Promise.allSettled(APP_SHELL.map((url) => cache.add(url)));
-    const failed = results.filter((result) => result.status === 'rejected');
-    if (failed.length > 0) {
+    const missing = APP_SHELL.filter((_, i) => results[i].status === 'rejected');
+    if (missing.length === 0) return;
+
+    // Un errore di rete è transitorio: si ritenta una volta. Un 404 invece
+    // significa che il file non esiste più: in quel caso l'install fallisce.
+    const stillMissing = [];
+    for (const url of missing) {
+      const response = await fetch(url, { cache: 'reload' }).catch(() => null);
+      if (response && response.ok) {
+        await cache.put(url, response);
+      } else if (!response || response.status !== 404) {
+        stillMissing.push(url);
+      }
+    }
+    if (stillMissing.length > 0) {
       // Non attivare un service worker con una shell incompleta: senza
       // questo controllo l'app resterebbe offline in modo silenzioso.
-      console.error('[sw] precache incompleto: ' + failed.length + ' risorse non scaricate');
+      console.error('[sw] precache incompleto: ' + stillMissing.length + ' risorse non scaricate');
       throw new Error('Precache incompleto');
     }
   })());
@@ -85,6 +112,12 @@ self.addEventListener('fetch', (event) => {
       || request.destination === 'script'
       || request.destination === 'style'
       || request.destination === 'manifest';
+    // I file vendor cambiano solo a ogni release: sono già versionati dalla
+    // cache della shell, quindi si servono dalla cache e non dalla rete.
+    if (url.pathname.includes('/vendor/')) {
+      event.respondWith(cacheFirst(request, SHELL_CACHE));
+      return;
+    }
     if (dynamic) {
       // HTML/JS/CSS sempre freschi quando c'è rete: evita di mescolare
       // una pagina nuova con asset vecchi in cache.
@@ -95,10 +128,19 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (url.hostname.endsWith('tile.openstreetmap.org')) {
-    event.respondWith(tileFirst(request));
+  if (url.hostname === 'tiles.openfreemap.org') {
+    // Stile, TileJSON, sprite e font: serviti dalla cache ma rivalidati in
+    // background, così un nuovo build di OpenFreeMap non lascia in cache
+    // riferimenti a tessere sparite.
+    event.respondWith(isCriticalMapResource(url)
+      ? staleWhileRevalidate(request)
+      : tileFirst(request));
   }
 });
+
+function isCriticalMapResource(url) {
+  return CRITICAL_MAP_RE.test(url.pathname);
+}
 
 async function fetchWithTimeout(request, timeout) {
   const controller = new AbortController();
@@ -112,10 +154,18 @@ async function fetchWithTimeout(request, timeout) {
 
 async function networkFirst(request) {
   const cache = await caches.open(SHELL_CACHE);
+  // Le navigazioni con parametri (condivisione, scorciatoie del manifest)
+  // hanno URL sempre diversi: non vanno salvate in cache, altrimenti la
+  // cache della shell cresce senza limite (la shell resta ./index.html).
+  let skipCache = false;
+  try {
+    const url = new URL(request.url);
+    skipCache = request.mode === 'navigate' && url.search.length > 1;
+  } catch (_) { /* URL non valido: tratta come richiesta normale */ }
   try {
     const response = await fetchWithTimeout(request, NETWORK_TIMEOUT);
     if (response && response.ok) {
-      cache.put(request, response.clone());
+      if (!skipCache) cache.put(request, response.clone());
       return response;
     }
     const cached = (await cache.match(request))
@@ -164,6 +214,28 @@ async function tileFirst(request) {
   }
 }
 
+// Risorse di piano di controllo: cache-first con rivalidazione in background.
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(TILE_CACHE);
+  const cached = await cache.match(request);
+  const network = fetch(request)
+    .then(async (response) => {
+      if (response && response.ok) {
+        await cache.put(request, response.clone());
+        await trimTiles();
+      }
+      return response;
+    })
+    .catch(() => null);
+  if (cached) {
+    // La risposta in rete continua in background: non blocca la risposta.
+    void network;
+    return cached;
+  }
+  const response = await network;
+  return response || new Response('', { status: 504, statusText: 'Offline' });
+}
+
 let trimming = false;
 
 async function trimTiles() {
@@ -173,8 +245,18 @@ async function trimTiles() {
     const cache = await caches.open(TILE_CACHE);
     const keys = await cache.keys();
     if (keys.length <= MAX_TILES) return;
-    for (let i = 0; i < keys.length - MAX_TILES; i++) {
-      await cache.delete(keys[i]);
+    // Le risorse di piano di controllo non si sfrattano mai: anzi, se sono
+    // in eccesso, si lascia uscire prima una tessera vecchia.
+    const evictable = keys.filter((req) => {
+      try {
+        return !isCriticalMapResource(new URL(req.url));
+      } catch (_) {
+        return true;
+      }
+    });
+    const excess = keys.length - MAX_TILES;
+    for (let i = 0; i < Math.min(excess, evictable.length); i++) {
+      await cache.delete(evictable[i]);
     }
   } finally {
     trimming = false;

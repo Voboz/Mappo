@@ -31,5 +31,15 @@
       "url": "./?action=search",
       "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
-  ]
+  ],
+  "share_target": {
+    "action": "./?share=1",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
 }

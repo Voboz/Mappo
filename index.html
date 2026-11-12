@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org; connect-src 'self' https://nominatim.openstreetmap.org; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tiles.openfreemap.org; connect-src 'self' https://nominatim.openstreetmap.org https://tiles.openfreemap.org; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <title>Luoghi del cuore</title>
   <meta name="description" content="Salva i tuoi luoghi del cuore, ritrovali sulla mappa e portali sempre con te. Funziona anche offline.">
   <meta name="theme-color" content="#0d9488">
@@ -16,7 +16,14 @@
   <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="./vendor/maplibre/maplibre-gl.css">
   <link rel="stylesheet" href="./styles.css">
+  <!-- defer: gli script vengono scaricati in parallelo e eseguiti in ordine,
+       senza script inline (la CSP richiede script-src 'self'). -->
+  <script src="./vendor/leaflet/leaflet.js" defer></script>
+  <script src="./vendor/maplibre/maplibre-gl-csp.js" defer></script>
+  <script src="./vendor/maplibre/leaflet-maplibre-gl.js" defer></script>
+  <script src="./app.js" defer></script>
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
@@ -29,6 +36,7 @@
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5m0 0 4 4m-4-4L8 9M4 19h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5.5m0 0 2.4-2.4M12 12.5 9.6 10.1M9.8 18h4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.2S4.2 15.3 4.2 9.7A4.6 4.6 0 0 1 12 6.6a4.6 4.6 0 0 1 7.8 3.1c0 5.6-7.8 10.5-7.8 10.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.2 2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.7l6.1-.9L12 3.2Z" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21.2s7-6.5 7-11.1a7 7 0 1 0-14 0c0 4.6 7 11.1 7 11.1Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="10" r="2.6" fill="currentColor"/></symbol>
     <symbol id="i-map" viewBox="0 0 24 24"><path d="m9 4.2-5 2v13.6l5-2 6 2 5-2V4.2l-5 2-6-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 4.2v13.6M15 6.2v13.6" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.2h5V7M6.7 7l.9 12.8h8.8L17.3 7M10.2 11v5.5M13.8 11v5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -101,10 +109,23 @@
 
         <div id="chips" class="chips" role="group" aria-label="Filtra per categoria"></div>
 
+        <div class="filters" role="group" aria-label="Filtri rapidi">
+          <button id="filterFavorites" class="filter-chip" type="button" aria-pressed="false">
+            <svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>
+            <span>Preferiti</span>
+          </button>
+          <button id="filterTodo" class="filter-chip" type="button" aria-pressed="false">Da visitare</button>
+          <button id="filterDone" class="filter-chip" type="button" aria-pressed="false">Visitati</button>
+        </div>
+
         <div class="drawer-quick">
           <button id="btnAddFromDrawer" class="quick-add">
             <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
             <span>Aggiungi un luogo</span>
+          </button>
+          <button id="btnNearMe" class="near-me-btn" type="button" aria-pressed="false" aria-label="Ordina i luoghi dal più vicino">
+            <svg class="icon" aria-hidden="true"><use href="#i-locate"/></svg>
+            <span>Vicino a me</span>
           </button>
         </div>
       </div>
@@ -120,6 +141,10 @@
           <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
           <span>Importa</span>
         </button>
+        <button id="btnShare" class="foot-btn" aria-label="Condividi i luoghi">
+          <svg class="icon" aria-hidden="true"><use href="#i-share"/></svg>
+          <span>Condividi</span>
+        </button>
         <button id="btnInstall" class="foot-btn" aria-label="Installa l'app sul telefono">
           <svg class="icon" aria-hidden="true"><use href="#i-install"/></svg>
           <span>Installa</span>
@@ -129,7 +154,7 @@
           <span>Info</span>
         </button>
       </div>
-      <input id="importFile" type="file" accept="application/json,.json" hidden>
+      <input id="importFile" type="file" accept=".json,.geojson,.kml,.gpx,.csv,application/json,application/geo+json,application/vnd.google-earth.kml+xml,application/gpx+xml,text/csv" hidden>
     </aside>
 
     <div id="crosshair" class="crosshair" aria-hidden="true" hidden>
@@ -188,6 +213,26 @@
             <div class="select-wrap">
               <select id="placeCategory"></select>
               <svg class="icon select-chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field field-fav">
+              <label for="btnFavorite">Preferito</label>
+              <button id="btnFavorite" class="fav-toggle" type="button" aria-pressed="false" aria-label="Preferito">
+                <svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>
+              </button>
+            </div>
+            <div class="field">
+              <label for="placeStatus">Stato</label>
+              <div class="select-wrap">
+                <select id="placeStatus">
+                  <option value="">Nessuno</option>
+                  <option value="da_visitare">Da visitare</option>
+                  <option value="visitato">Visitato</option>
+                </select>
+                <svg class="icon select-chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+              </div>
             </div>
           </div>
 
@@ -265,8 +310,5 @@
       <div class="noscript">Per usare l'app devi attivare JavaScript nel browser.</div>
     </noscript>
   </div>
-
-  <script src="./vendor/leaflet/leaflet.js"></script>
-  <script src="./app.js"></script>
 </body>
 </html>
