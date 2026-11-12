@@ -1,3 +1,20 @@
+# ============================================================
+#  Generatore delle icone di Mappo
+#  ------------------------------------------------------------
+#  Produce l'icona dell'app in tutte le varianti usate dal
+#  manifest PWA, da index.html e dal README:
+#    - icon-192.png / icon-512.png     (purpose "any")
+#    - icon-maskable-512.png           (safe zone ridotta)
+#    - apple-touch-icon.png            (180x180, senza trasparenza)
+#    - favicon-32.png                  (32x32)
+#
+#  Disegno: pin a goccia bianco con foro centrale su sfondo
+#  a gradiente diagonale (verde-acqua). Le varianti "maskable"
+#  usano una scala più piccola per stare nella safe zone.
+#
+#  Uso:  powershell -ExecutionPolicy Bypass -File tools\make-icons.ps1
+# ============================================================
+
 Add-Type -AssemblyName System.Drawing
 
 function New-AppIcon {
@@ -7,75 +24,69 @@ function New-AppIcon {
         [bool]$Maskable
     )
 
-    $bmp = New-Object System.Drawing.Bitmap($Size, $Size)
+    $bmp = [System.Drawing.Bitmap]::new($Size, $Size)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
 
-    $rect = New-Object System.Drawing.Rectangle(0, 0, $Size, $Size)
-    $bg = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+    $rect = [System.Drawing.Rectangle]::new(0, 0, $Size, $Size)
+
+    # Sfondo a gradiente diagonale: verde-acqua chiaro in alto a
+    # sinistra, verde-acqua profondo in basso a destra.
+    $bg = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
         $rect,
-        [System.Drawing.Color]::FromArgb(255, 13, 148, 136),
-        [System.Drawing.Color]::FromArgb(255, 12, 74, 110),
+        [System.Drawing.Color]::FromArgb(255, 45, 212, 191),
+        [System.Drawing.Color]::FromArgb(255, 15, 118, 110),
         45.0)
     $g.FillRectangle($bg, $rect)
 
-    $scale = if ($Maskable) { 0.54 } else { 0.64 }
+    # Geometria del pin (R = raggio della testa).
+    # Altezza totale = 3.1 R (testa + coda), larghezza = 2 R.
+    $pinHeight = $Size * $(if ($Maskable) { 0.50 } else { 0.62 })
+    $R = $pinHeight / 3.1
     $cx = $Size / 2.0
-    $cy = $Size / 2.0
-    $pinTop = $cy - $Size * $scale * 0.55
-    $pinBottom = $cy + $Size * $scale * 0.62
-    $r = $Size * $scale * 0.30
-    $headCy = $pinTop + $r
+    $headCy = $Size / 2.0 - 0.55 * $R
+    $tipY = $headCy + 2.1 * $R
 
-    $pinPath = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $pinPath.FillMode = [System.Drawing.Drawing2D.FillMode]::Winding
-    $pinPath.AddEllipse([float]($cx - $r), [float]($headCy - $r), [float](2 * $r), [float](2 * $r))
-    $tail = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $tail.FillMode = [System.Drawing.Drawing2D.FillMode]::Winding
-    $tail.AddPolygon([System.Drawing.PointF[]]@(
-        (New-Object System.Drawing.PointF([float]($cx - $r * 0.58), [float]($headCy + $r * 0.34))),
-        (New-Object System.Drawing.PointF([float]($cx + $r * 0.58), [float]($headCy + $r * 0.34))),
-        (New-Object System.Drawing.PointF([float]$cx, [float]$pinBottom))
-    ))
-    $pinPath.AddPath($tail, $false)
+    $pin = [System.Drawing.Drawing2D.GraphicsPath]::new()
+    $pin.FillMode = [System.Drawing.Drawing2D.FillMode]::Winding
+    $headRect = [System.Drawing.RectangleF]::new(
+        [float]($cx - $R), [float]($headCy - $R), [float](2 * $R), [float](2 * $R))
 
-    $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-    $g.FillPath($white, $pinPath)
+    # Testa: semicerchio da sinistra a destra passing per l'alto.
+    $pin.AddArc($headRect, 180.0, 180.0)
 
-    $hs = $r * 0.80
-    $hx = $cx
-    $hy = $headCy - $hs * 0.05
-    $heart = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $heart.AddBezier(
-        [float]$hx, [float]($hy + $hs * 0.33),
-        [float]($hx - $hs * 0.62), [float]($hy - $hs * 0.16),
-        [float]($hx - $hs * 0.30), [float]($hy - $hs * 0.58),
-        [float]$hx, [float]($hy - $hs * 0.22))
-    $heart.AddBezier(
-        [float]$hx, [float]($hy - $hs * 0.22),
-        [float]($hx + $hs * 0.30), [float]($hy - $hs * 0.58),
-        [float]($hx + $hs * 0.62), [float]($hy - $hs * 0.16),
-        [float]$hx, [float]($hy + $hs * 0.33))
-    $heart.CloseFigure()
+    # Lato destro: dalla cintura scende curvando verso la punta.
+    $pin.AddBezier(
+        [float]($cx + $R), [float]$headCy,
+        [float]($cx + $R * 0.98), [float]($headCy + $R * 0.85),
+        [float]($cx + $R * 0.30), [float]($tipY - $R * 0.35),
+        [float]$cx, [float]$tipY)
 
-    $heartBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-        $rect,
-        [System.Drawing.Color]::FromArgb(255, 244, 63, 94),
-        [System.Drawing.Color]::FromArgb(255, 225, 29, 72),
-        45.0)
-    $g.FillPath($heartBrush, $heart)
+    # Lato sinistro: simmetrico.
+    $pin.AddBezier(
+        [float]$cx, [float]$tipY,
+        [float]($cx - $R * 0.30), [float]($tipY - $R * 0.35),
+        [float]($cx - $R * 0.98), [float]($headCy + $R * 0.85),
+        [float]($cx - $R), [float]$headCy)
+    $pin.CloseFigure()
+
+    $white = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+    $g.FillPath($white, $pin)
+
+    # Foro centrale: mostra lo sfondo, come nei pin moderni.
+    $holeR = $R * 0.42
+    $g.FillEllipse($bg, [float]($cx - $holeR), [float]($headCy - $holeR),
+        [float](2 * $holeR), [float](2 * $holeR))
 
     $g.Dispose()
     $bmp.Save($OutPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()
-    $pinPath.Dispose()
-    $tail.Dispose()
-    $heart.Dispose()
+    $pin.Dispose()
     $bg.Dispose()
     $white.Dispose()
-    $heartBrush.Dispose()
 }
 
 $root = Split-Path -Parent $PSScriptRoot

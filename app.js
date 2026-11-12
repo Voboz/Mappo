@@ -1,5 +1,5 @@
 /* ============================================================
-   Luoghi del cuore — logica dell'applicazione
+   Mappo — logica dell'applicazione
    ------------------------------------------------------------
    - Mappa OpenFreeMap (Leaflet + MapLibre GL, incluso in locale)
    - Dati salvati sul dispositivo (localStorage)
@@ -1898,7 +1898,7 @@
 
   function currentBackup() {
     return {
-      app: 'Luoghi del cuore',
+      app: 'Mappo',
       version: 1,
       exportedAt: new Date().toISOString(),
       categories: state.categories,
@@ -1970,7 +1970,7 @@
     return '<?xml version="1.0" encoding="UTF-8"?>\n'
       + '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
       + '  <Document>\n'
-      + '    <name>Luoghi del cuore</name>\n'
+      + '    <name>Mappo</name>\n'
       + placemarks + '\n'
       + '  </Document>\n'
       + '</kml>\n';
@@ -1992,8 +1992,8 @@
         + '  </wpt>';
     }).join('\n');
     return '<?xml version="1.0" encoding="UTF-8"?>\n'
-      + '<gpx version="1.1" creator="Luoghi del cuore" xmlns="http://www.topografix.com/GPX/1/1" xmlns:ldc="https://luoghidelcuore.local/schema">\n'
-      + '  <metadata><name>Luoghi del cuore</name></metadata>\n'
+      + '<gpx version="1.1" creator="Mappo" xmlns="http://www.topografix.com/GPX/1/1" xmlns:ldc="https://luoghidelcuore.local/schema">\n'
+      + '  <metadata><name>Mappo</name></metadata>\n'
       + waypoints + '\n'
       + '</gpx>\n';
   }
@@ -2008,7 +2008,7 @@
   }
 
   function exportFilename(format) {
-    return 'luoghi-del-cuore-' + new Date().toISOString().slice(0, 10) + '.' + format;
+    return 'mappo-' + new Date().toISOString().slice(0, 10) + '.' + format;
   }
 
   async function saveExportFile(format, content, mime) {
@@ -2017,7 +2017,7 @@
     const file = new File([blob], filename, { type: mime });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({ files: [file], title: 'Luoghi del cuore' });
+        await navigator.share({ files: [file], title: 'Mappo' });
         return 'shared';
       } catch (err) {
         if (err && err.name === 'AbortError') return 'aborted';
@@ -2300,7 +2300,7 @@
     };
     const share = async () => {
       try {
-        await navigator.share({ title: 'Luoghi del cuore', text: 'La mia lista di luoghi', url });
+        await navigator.share({ title: 'Mappo', text: 'La mia lista di luoghi', url });
       } catch (err) {
         if (err && err.name === 'AbortError') return;
         await copy();
@@ -2552,7 +2552,8 @@
 
   function listNameFromFile(filename) {
     const base = cleanText(String(filename || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '), 40);
-    if (!base || /^luoghi del cuore/i.test(base)) return '';
+    // I nomi dei file esportati dall'app non sono liste da importare.
+    if (!base || /^(mappo|luoghi del cuore)/i.test(base)) return '';
     return base;
   }
 
@@ -3093,13 +3094,19 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Luoghi del cuore' }), ' · versione 1.6.0'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.1'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
-      h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Luoghi del cuore» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
+      h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
       h('p', { text: 'Esporta in JSON, GeoJSON, KML, GPX o CSV. Importa anche i file di Google Takeout: prima vedi un\'anteprima e i duplicati vengono saltati.' }),
       h('p', { text: 'Condividi la lista come file o come link: chi lo apre vede un\'anteprima e sceglie se importarla.' }),
-      h('p', { text: state.places.length + (state.places.length === 1 ? ' luogo salvato.' : ' luoghi salvati.') })
+      h('p', { text: state.places.length + (state.places.length === 1 ? ' luogo salvato.' : ' luoghi salvati.') }),
+      h('p', {}, 'Licenza: ', h('a', {
+        href: 'https://polyformproject.org/licenses/noncommercial/1.0.0',
+        target: '_blank',
+        rel: 'noopener',
+        text: 'PolyForm Noncommercial 1.0.0',
+      }), ' (uso non commerciale). Mappa: OpenFreeMap, dati OpenStreetMap.')
     );
 
     showModal({

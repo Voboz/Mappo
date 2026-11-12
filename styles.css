@@ -1,5 +1,5 @@
 /* ============================================================
-   Luoghi del cuore - stile dell'app
+   Mappo - stile dell'app
    ============================================================ */
 
 :root {
@@ -189,7 +189,7 @@ button { cursor: pointer; }
   display: grid;
   place-items: center;
   color: #fff;
-  background: linear-gradient(140deg, #0f766e, #115e59);
+  background: linear-gradient(140deg, #2dd4bf, #0f766e);
   box-shadow: 0 4px 10px rgba(13, 148, 136, .35);
 }
 .brand-mark .icon { width: 17px; height: 17px; }
@@ -1191,6 +1191,12 @@ button { cursor: pointer; }
 .modal-body p { margin: 0 0 9px; }
 .modal-body p:last-child { margin-bottom: 0; }
 .modal-body strong { color: var(--ink); }
+.modal-body a {
+  color: var(--primary-700);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .modal-body .share-received {
   margin: 10px 0;
   padding: 10px 12px;

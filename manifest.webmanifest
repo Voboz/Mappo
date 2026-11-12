@@ -1,7 +1,7 @@
 {
-  "name": "Luoghi del cuore",
-  "short_name": "Luoghi",
-  "description": "Salva i tuoi luoghi del cuore, ritrovali sulla mappa e cercali in un attimo. Funziona anche offline.",
+  "name": "Mappo",
+  "short_name": "Mappo",
+  "description": "Salva i tuoi luoghi, ritrovali sulla mappa e cercali in un attimo. Funziona anche offline.",
   "lang": "it",
   "dir": "ltr",
   "id": "./",

@@ -15,11 +15,14 @@
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.6.0';
-const SHELL_CACHE = 'luoghi-shell-' + VERSION;
-const TILE_CACHE = 'luoghi-tiles-' + VERSION;
+const VERSION = 'v1.6.1';
+const SHELL_CACHE = 'mappo-shell-' + VERSION;
+const TILE_CACHE = 'mappo-tiles-' + VERSION;
 const MAX_TILES = 800;
 const NETWORK_TIMEOUT = 3500;
+// Cache create dalla versione precedente dell'app (prefisso "luoghi-"):
+// vengono eliminate al primo avvio dopo il rinominamento.
+const LEGACY_CACHE_PREFIX = 'luoghi-';
 
 // Risorse di "piano di controllo" della mappa (stile, TileJSON, sprite, font):
 // senza queste MapLibre non può costruire la mappa, quindi non devono mai
@@ -53,7 +56,13 @@ const APP_SHELL = [
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL_CACHE);
-    const results = await Promise.allSettled(APP_SHELL.map((url) => cache.add(url)));
+    // cache: 'reload' evita di prendere da cache HTTP copie vecchie
+    // (per esempio delle icone appena rigenerate).
+    const results = await Promise.allSettled(APP_SHELL.map(async (url) => {
+      const response = await fetch(url, { cache: 'reload' });
+      if (!response || !response.ok) throw new Error('HTTP ' + (response && response.status));
+      await cache.put(url, response);
+    }));
     const missing = APP_SHELL.filter((_, i) => results[i].status === 'rejected');
     if (missing.length === 0) return;
 
@@ -83,7 +92,8 @@ self.addEventListener('activate', (event) => {
       .then((keys) => Promise.all(
         keys
           // Cancella solo le cache di questa app: l'origine può ospitare altre PWA.
-          .filter((key) => key.startsWith('luoghi-') && key !== SHELL_CACHE && key !== TILE_CACHE)
+          .filter((key) => (key.startsWith('mappo-') || key.startsWith(LEGACY_CACHE_PREFIX))
+            && key !== SHELL_CACHE && key !== TILE_CACHE)
           .map((key) => caches.delete(key))
       ))
       .then(() => self.clients.claim())
