@@ -5,7 +5,7 @@
 #  manifest PWA, da index.html e dal README:
 #    - icon-192.png / icon-512.png     (purpose "any")
 #    - icon-maskable-512.png           (safe zone ridotta)
-#    - apple-touch-icon.png            (180x180, senza trasparenza)
+#    - apple-touch-icon.png            (180x180, sfondo pieno)
 #    - favicon-32.png                  (32x32)
 #
 #  Disegno: pin a goccia bianco con foro centrale su sfondo
@@ -13,7 +13,13 @@
 #  usano una scala più piccola per stare nella safe zone.
 #
 #  Uso:  powershell -ExecutionPolicy Bypass -File tools\make-icons.ps1
+#  Nota: serve Windows PowerShell 5.1 (powershell.exe). Su PowerShell 7
+#  (.NET Core) l'assembly System.Drawing non e' disponibile nel GAC.
 # ============================================================
+
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    throw "Questo script richiede Windows PowerShell 5.1 (powershell.exe): System.Drawing non e' disponibile su .NET Core."
+}
 
 Add-Type -AssemblyName System.Drawing
 
@@ -87,6 +93,10 @@ function New-AppIcon {
     $pin.Dispose()
     $bg.Dispose()
     $white.Dispose()
+
+    if (-not (Test-Path $OutPath)) {
+        throw "Icona non scritta: $OutPath"
+    }
 }
 
 $root = Split-Path -Parent $PSScriptRoot

@@ -15,11 +15,18 @@
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.6.1';
+const VERSION = 'v1.6.2';
 const SHELL_CACHE = 'mappo-shell-' + VERSION;
 const TILE_CACHE = 'mappo-tiles-' + VERSION;
+const RASTER_CACHE = 'mappo-raster-' + VERSION;
 const MAX_TILES = 800;
+// Le tessere raster Natural Earth sono molto piu' grosse di quelle vettoriali
+// (~250 KB): tengono una cache separata e piccola.
+const MAX_RASTER_TILES = 24;
 const NETWORK_TIMEOUT = 3500;
+// Script e CSS: se la rete e' lenta meglio la cache (stessa versione) che
+// aspettare secondi con la pagina vuota.
+const ASSET_TIMEOUT = 1500;
 // Cache create dalla versione precedente dell'app (prefisso "luoghi-"):
 // vengono eliminate al primo avvio dopo il rinominamento.
 const LEGACY_CACHE_PREFIX = 'luoghi-';
@@ -67,7 +74,8 @@ self.addEventListener('install', (event) => {
     if (missing.length === 0) return;
 
     // Un errore di rete è transitorio: si ritenta una volta. Un 404 invece
-    // significa che il file non esiste più: in quel caso l'install fallisce.
+    // significa che il file non esiste più (per esempio un'icona rimossa):
+    // in quel caso si continua senza di lui, così l'install non fallisce.
     const stillMissing = [];
     for (const url of missing) {
       const response = await fetch(url, { cache: 'reload' }).catch(() => null);
@@ -128,10 +136,19 @@ self.addEventListener('fetch', (event) => {
       event.respondWith(cacheFirst(request, SHELL_CACHE));
       return;
     }
+    // Gli URL con parametri sono varianti (cache-busting, test): non si
+    // memorizzano, altrimenti la cache della shell cresce senza limite.
+    if (url.search.length > 1) {
+      event.respondWith(networkOnly(request));
+      return;
+    }
     if (dynamic) {
-      // HTML/JS/CSS sempre freschi quando c'è rete: evita di mescolare
-      // una pagina nuova con asset vecchi in cache.
-      event.respondWith(networkFirst(request));
+      // HTML/JS/CSS freschi quando c'è rete: evita di mescolare una pagina
+      // nuova con asset vecchi in cache. Per script e CSS il timeout è più
+      // breve: se la rete è lenta si preferisce la copia in cache (che
+      // appartiene alla stessa versione) a una pagina che non si disegna.
+      const timeout = request.mode === 'navigate' ? NETWORK_TIMEOUT : ASSET_TIMEOUT;
+      event.respondWith(networkFirst(request, timeout));
     } else {
       event.respondWith(cacheFirst(request, SHELL_CACHE));
     }
@@ -139,12 +156,17 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (url.hostname === 'tiles.openfreemap.org') {
+    if (url.pathname.includes('/natural_earth/')) {
+      // Tessere raster pesanti: cache separata e limitata.
+      event.respondWith(tileFirst(request, RASTER_CACHE, MAX_RASTER_TILES));
+      return;
+    }
     // Stile, TileJSON, sprite e font: serviti dalla cache ma rivalidati in
     // background, così un nuovo build di OpenFreeMap non lascia in cache
     // riferimenti a tessere sparite.
     event.respondWith(isCriticalMapResource(url)
       ? staleWhileRevalidate(request)
-      : tileFirst(request));
+      : tileFirst(request, TILE_CACHE, MAX_TILES));
   }
 });
 
@@ -162,7 +184,7 @@ async function fetchWithTimeout(request, timeout) {
   }
 }
 
-async function networkFirst(request) {
+async function networkFirst(request, timeout = NETWORK_TIMEOUT) {
   const cache = await caches.open(SHELL_CACHE);
   // Le navigazioni con parametri (condivisione, scorciatoie del manifest)
   // hanno URL sempre diversi: non vanno salvate in cache, altrimenti la
@@ -173,7 +195,7 @@ async function networkFirst(request) {
     skipCache = request.mode === 'navigate' && url.search.length > 1;
   } catch (_) { /* URL non valido: tratta come richiesta normale */ }
   try {
-    const response = await fetchWithTimeout(request, NETWORK_TIMEOUT);
+    const response = await fetchWithTimeout(request, timeout);
     if (response && response.ok) {
       if (!skipCache) cache.put(request, response.clone());
       return response;
@@ -195,6 +217,15 @@ async function networkFirst(request) {
   }
 }
 
+// Richiesta senza cache: usata per gli URL con parametri.
+async function networkOnly(request) {
+  try {
+    return await fetch(request);
+  } catch (_) {
+    return new Response('', { status: 504, statusText: 'Offline' });
+  }
+}
+
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
@@ -208,15 +239,15 @@ async function cacheFirst(request, cacheName) {
   }
 }
 
-async function tileFirst(request) {
-  const cache = await caches.open(TILE_CACHE);
+async function tileFirst(request, cacheName = TILE_CACHE, limit = MAX_TILES) {
+  const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
     const response = await fetch(request);
     if (response && (response.ok || response.type === 'opaque')) {
       await cache.put(request, response.clone());
-      await trimTiles();
+      await trimTiles(cacheName, limit);
     }
     return response;
   } catch (_) {
@@ -232,7 +263,7 @@ async function staleWhileRevalidate(request) {
     .then(async (response) => {
       if (response && response.ok) {
         await cache.put(request, response.clone());
-        await trimTiles();
+        await trimTiles(TILE_CACHE, MAX_TILES);
       }
       return response;
     })
@@ -248,13 +279,13 @@ async function staleWhileRevalidate(request) {
 
 let trimming = false;
 
-async function trimTiles() {
+async function trimTiles(cacheName = TILE_CACHE, limit = MAX_TILES) {
   if (trimming) return;
   trimming = true;
   try {
-    const cache = await caches.open(TILE_CACHE);
+    const cache = await caches.open(cacheName);
     const keys = await cache.keys();
-    if (keys.length <= MAX_TILES) return;
+    if (keys.length <= limit) return;
     // Le risorse di piano di controllo non si sfrattano mai: anzi, se sono
     // in eccesso, si lascia uscire prima una tessera vecchia.
     const evictable = keys.filter((req) => {
@@ -264,7 +295,7 @@ async function trimTiles() {
         return true;
       }
     });
-    const excess = keys.length - MAX_TILES;
+    const excess = keys.length - limit;
     for (let i = 0; i < Math.min(excess, evictable.length); i++) {
       await cache.delete(evictable[i]);
     }

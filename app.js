@@ -11,6 +11,9 @@
 
   /* ----------------------------- Costanti ----------------------------- */
 
+  // Chiavi di archivio: sono volutamente rimaste quelle del vecchio nome
+  // "Luoghi del cuore" (prefisso ldc). Cambiarle farebbe perdere i luoghi
+  // già salvati a chi usa l'app dal giorno della prima release.
   const STORAGE = {
     places: 'ldc.places.v1',
     categories: 'ldc.categories.v1',
@@ -93,7 +96,9 @@
   let toastHideTimer = null;
   let importRunning = false;
   let shareLinkPending = false;
-  let shareTargetPending = false;
+  // Momento dell'ultima condivisione gestita: serve a non far comparire il
+  // benvenuto sopra il form, senza disabilitare i link condivisi.
+  let shareHandledAt = 0;
 
   const overlays = [];
   let historyOk = true;
@@ -443,6 +448,7 @@
     const { latitude, longitude, accuracy } = position.coords;
     const latlng = [latitude, longitude];
     state.currentPosition = { lat: latitude, lng: longitude, accuracy, at: Date.now() };
+    if (!map) return;
     if (!positionMarker) {
       positionMarker = L.marker(latlng, {
         icon: userIcon(),
@@ -489,6 +495,8 @@
   function renderMarkers() {
     for (const marker of state.markers.values()) marker.remove();
     state.markers.clear();
+    // Senza mappa non ci sono marker da mostrare, ma l'app resta viva.
+    if (!map) return;
 
     for (const place of state.places) {
       const marker = L.marker([place.lat, place.lng], {
@@ -617,7 +625,9 @@
 
   function matchesQuery(place, needle) {
     if (!needle) return true;
-    if (fold(place.name).includes(needle)) return true;
+    // foldedName riusa il folding memoizzato: la ricerca rifà questo passaggio
+    // per ogni luogo a ogni tasto.
+    if (foldedName(place).includes(needle)) return true;
     if (place.note && fold(place.note).includes(needle)) return true;
     if (place.address && fold(place.address).includes(needle)) return true;
     if (fold(getCategory(place.categoryId).name).includes(needle)) return true;
@@ -902,6 +912,7 @@
       el.classList.toggle('is-selected', el.dataset.id === id);
     });
     highlightMarker(id);
+    if (!map) return;
     const token = ++flyToken;
     map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
     setTimeout(() => {
@@ -962,8 +973,15 @@
     const onPop = () => setTimeout(finish, 0);
     window.addEventListener('popstate', onPop);
     requestCloseOverlay(kind);
-    if (!overlays.some((o) => o.kind === kind)) finish();
-    setTimeout(finish, 650);
+    if (!overlays.some((o) => o.kind === kind)) {
+      finish();
+      return;
+    }
+    // L'overlay non si è ancora chiuso: il callback viene eseguito solo
+    // quando è davvero chiuso, così non resta aperto sotto il nuovo form.
+    setTimeout(() => {
+      if (!overlays.some((o) => o.kind === kind)) finish();
+    }, 650);
   }
 
   window.addEventListener('popstate', () => {
@@ -1075,7 +1093,8 @@
     // e un tocco consecutivo aprano due form.
     if ($('sheet').classList.contains('open')) return;
 
-    const center = map.getCenter();
+    // Senza mappa il luogo viene salvato con le coordinate fornite.
+    const center = map ? map.getCenter() : { lat: ITALY_CENTER[0], lng: ITALY_CENTER[1] };
     state.editingId = null;
     state.draft = {
       lat: Number.isFinite(lat) ? lat : center.lat,
@@ -1104,7 +1123,7 @@
 
   function startEditPlace(place) {
     if (!place) return;
-    map.closePopup();
+    if (map) map.closePopup();
     state.editingId = place.id;
     state.draft = { lat: place.lat, lng: place.lng, address: place.address || '', moved: false };
     $('placeForm').reset();
@@ -1297,6 +1316,10 @@
 
   function enterPickMode() {
     hideSheet();
+    if (!map) {
+      showToast('Scegliere sulla mappa non è disponibile', { tone: 'error' });
+      return;
+    }
     $('app').classList.add('picking');
     $('crosshair').hidden = false;
     $('pickBar').hidden = false;
@@ -1352,7 +1375,7 @@
       const position = await getPosition();
       showPositionOnMap(position);
       btn.classList.add('is-active');
-      map.flyTo([position.coords.latitude, position.coords.longitude], Math.max(map.getZoom(), 16), { duration: 0.8 });
+      if (map) map.flyTo([position.coords.latitude, position.coords.longitude], Math.max(map.getZoom(), 16), { duration: 0.8 });
       renderList();
       if (!quiet) showToast('Posizione aggiornata', { tone: 'success' });
       return state.currentPosition;
@@ -1483,7 +1506,7 @@
     renderAll();
 
     const token = ++flyToken;
-    map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
+    if (map) map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
     setTimeout(() => {
       if (token !== flyToken) return;
       const marker = state.markers.get(place.id);
@@ -1517,7 +1540,7 @@
       state.places.splice(index, 0, removed);
       return;
     }
-    map.closePopup();
+    if (map) map.closePopup();
     renderAll();
 
     showToast('Luogo eliminato', {
@@ -1678,8 +1701,9 @@
   }
 
   async function handleShareTarget(payload) {
-    // Resta attivo per la sessione: evita che il benvenuto copra la condivisione.
-    shareTargetPending = true;
+    // Resta "attivo" per qualche secondo: evita che il benvenuto copra la
+    // condivisione, ma senza bloccare i link condivisi per la sessione.
+    shareHandledAt = Date.now();
     try {
       history.replaceState({}, '', window.location.pathname + window.location.hash);
     } catch (_) { /* noop */ }
@@ -1991,6 +2015,9 @@
         + '    </extensions>\n'
         + '  </wpt>';
     }).join('\n');
+    // Namespace XML mantenuto a "ldc" (Luoghi del cuore) per compatibilità
+    // con i GPX già esportati: gli identificatori XML non hanno implicito di
+    // branding e il parser legge le estensioni per local name.
     return '<?xml version="1.0" encoding="UTF-8"?>\n'
       + '<gpx version="1.1" creator="Mappo" xmlns="http://www.topografix.com/GPX/1/1" xmlns:ldc="https://luoghidelcuore.local/schema">\n'
       + '  <metadata><name>Mappo</name></metadata>\n'
@@ -2380,6 +2407,12 @@
     const places = [];
     const skipped = [];
     for (const raw of data.p) {
+      // Stesso tetto dei file importati: un link non deve poter portare
+      // più voci di quanto l'app ne possa gestire.
+      if (places.length >= MAX_IMPORT_PLACES) {
+        skipped.push(skippedEntry('', 'oltre il limite di ' + MAX_IMPORT_PLACES + ' luoghi'));
+        break;
+      }
       if (!Array.isArray(raw)) { skipped.push(skippedEntry('', 'dati non validi')); continue; }
       const name = cleanText(raw[0], 120);
       const lat = parseCoordinateValue(raw[1]);
@@ -2405,10 +2438,10 @@
   }
 
   async function handleShareLink() {
-    if (shareTargetPending) return;
     const token = shareTokenFromHash();
     if (!token) return;
     shareLinkPending = true;
+    shareHandledAt = Date.now();
     try {
       history.replaceState({}, '', window.location.pathname + window.location.search);
     } catch (_) { /* noop */ }
@@ -3042,9 +3075,9 @@
         return;
       }
 
-      map.closePopup();
+      if (map) map.closePopup();
       renderAll();
-      if (newPlaces.length > 0) {
+      if (map && newPlaces.length > 0) {
         const bounds = L.latLngBounds(newPlaces.map((place) => [place.lat, place.lng]));
         if (bounds.isValid()) map.fitBounds(bounds.pad(0.2), { maxZoom: 14 });
       }
@@ -3094,7 +3127,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.1'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.2'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3146,7 +3179,7 @@
               state.places = previous;
               return false;
             }
-            map.closePopup();
+            if (map) map.closePopup();
             renderAll();
             showToast('Tutti i luoghi sono stati cancellati');
           },
@@ -3475,7 +3508,9 @@
   }
 
   function maybeShowWelcome() {
-    if (shareLinkPending || shareTargetPending) return;
+    if (shareLinkPending) return;
+    // Poco dopo una condivisione il benvenuto coprirebbe il form: meglio aspettare.
+    if (Date.now() - shareHandledAt < 10000) return;
     if (state.places.length > 0 || state.settings.welcomeShown) return;
     setTimeout(() => {
       if (overlays.length > 0) return;
@@ -3491,7 +3526,14 @@
     // I listener si registrano prima della mappa: se la mappa non parte,
     // l'interfaccia resta comunque utilizzabile.
     bindUI();
-    initMap();
+    try {
+      initMap();
+    } catch (err) {
+      // Senza mappa l'app resta utilizzabile (lista, export, import,
+      // condivisione) e il service worker viene comunque registrato.
+      console.error('[map] inizializzazione fallita', err);
+      showToast('Mappa non disponibile: alcuni file non sono stati caricati', { tone: 'error', duration: 10000 });
+    }
     renderAll();
     showInstallButton();
     setupInstall();
