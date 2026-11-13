@@ -1642,8 +1642,8 @@
      Il link viene inviato al Worker soltanto quando c'è da risolverlo.
      ------------------------------------------------------------------- */
 
-  const SHORT_MAP_RE = /^(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+$/i;
-  const SHORT_MAP_IN_TEXT_RE = /(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+/i;
+  const SHORT_MAP_RE = /^(?:https?:\/\/)?(?:maps\.app\.goo\.gl|share\.google|goo\.gl\/maps|g\.co\/maps)\/\S+$/i;
+  const SHORT_MAP_IN_TEXT_RE = /(?:https?:\/\/)?(?:maps\.app\.goo\.gl|share\.google|goo\.gl\/maps|g\.co\/maps)\/\S+/i;
 
   // Endpoint del risolutore: riceve ?url=<link breve> e deve restituire
   // l'URL finale come JSON {"url":"…"} oppure come testo. Il Worker è in
@@ -3387,7 +3387,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.6'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.7'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3765,7 +3765,12 @@
         }
         if (Number.isFinite(result.lat) && Number.isFinite(result.lng)) {
           setDraftCoords(result.lat, result.lng, '');
-          if (result.name && !$('placeName').value.trim()) $('placeName').value = result.name;
+          if (result.name && !$('placeName').value.trim()) {
+            $('placeName').value = result.name;
+            if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
+              $('placeCategory').value = state.settings.lastCategory || 'altro';
+            }
+          }
           geocodeDraft();
           showToast('Coordinate importate', { tone: 'success' });
           return;
@@ -3777,8 +3782,13 @@
           const found = await forwardGeocode(result.name);
           if (found) {
             setDraftCoords(found.lat, found.lng, found.address || '');
-            if (!$('placeName').value.trim()) $('placeName').value = result.name;
-            showToast('Luogo trovato: controlla e salva', { tone: 'success' });
+            if (!$('placeName').value.trim()) {
+            $('placeName').value = result.name;
+            if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
+              $('placeCategory').value = state.settings.lastCategory || 'altro';
+            }
+          }
+          showToast('Luogo trovato: controlla e salva', { tone: 'success' });
             return;
           }
           error.textContent = 'Riconosciuto "' + result.name + '" ma non trovo la posizione: scegli il punto sulla mappa.';

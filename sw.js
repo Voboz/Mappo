@@ -15,7 +15,7 @@
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.6.6';
+const VERSION = 'v1.6.7';
 const SHELL_CACHE = 'mappo-shell-' + VERSION;
 const TILE_CACHE = 'mappo-tiles-' + VERSION;
 const RASTER_CACHE = 'mappo-raster-' + VERSION;

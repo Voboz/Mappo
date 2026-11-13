@@ -1,6 +1,6 @@
 # Informativa privacy di Mappo
 
-**Ultimo aggiornamento:** novembre 2026 · versione app 1.6.6
+**Ultimo aggiornamento:** novembre 2026 · versione app 1.6.7
 
 Mappo è una web app (PWA) per salvare luoghi personali. Non ha account, non ha un backend e non prevede alcun tracciamento pubblicitario. Questa pagina spiega quali dati restano sul dispositivo, quali escono e verso quali servizi.
 
