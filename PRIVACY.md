@@ -1,6 +1,6 @@
 # Informativa privacy di Mappo
 
-**Ultimo aggiornamento:** novembre 2026 · versione app 1.6.8
+**Ultimo aggiornamento:** novembre 2026 · versione app 1.6.16
 
 Mappo è una web app (PWA) per salvare luoghi personali. Non ha account, non ha un backend e non prevede alcun tracciamento pubblicitario. Questa pagina spiega quali dati restano sul dispositivo, quali escono e verso quali servizi.
 
@@ -27,6 +27,8 @@ Mappo usa la memoria locale del browser (`localStorage`) e la cache del service 
 | --- | --- | --- |
 | Luoghi | memoria locale del browser | nome, coordinate, indirizzo, nota, categoria, preferito, stato |
 | Categorie personalizzate | memoria locale del browser | nome, colore, icona |
+| Liste (raccolte) | memoria locale del browser | nome della lista |
+| Itinerari | memoria locale del browser | nome, data facoltativa, ordine dei luoghi, punto di partenza |
 | Impostazioni | memoria locale del browser | ultima categoria usata, posizione e zoom della mappa, avviso di benvenuto |
 | Cache offline | Cache Storage del browser | interfaccia e tessere di mappa già visitate |
 
@@ -89,7 +91,7 @@ In pratica:
 
 - **Accesso e portabilità:** menu ☰ → **Esporta** (JSON, GeoJSON, KML, GPX, CSV).
 - **Rettifica:** apri il luogo → **Modifica**.
-- **Cancellazione:** **Info → Cancella tutti** rimuove i luoghi e le copie di sicurezza dei dati danneggiati; per rimuovere anche categorie, impostazioni e cache cancella i dati del sito dalle impostazioni del browser.
+- **Cancellazione:** **Info → Cancella tutti** rimuove luoghi, liste, itinerari e le copie di sicurezza dei dati danneggiati; per rimuovere anche categorie, impostazioni e cache cancella i dati del sito dalle impostazioni del browser.
 - Poiché l'autore non riceve i dati, non c'è nulla da richiedere a lui; per i trattamenti dei servizi terzi rivolgiti ai fornitori.
 
 ## 10. Cookie e tracciamento
