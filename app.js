@@ -1642,8 +1642,8 @@
      Il link viene inviato al Worker soltanto quando c'è da risolverlo.
      ------------------------------------------------------------------- */
 
-  const SHORT_MAP_RE = /^(?:https?:\/\/)?(?:maps\.app\.goo\.gl|share\.google|goo\.gl\/maps|g\.co\/maps)\/\S+$/i;
-  const SHORT_MAP_IN_TEXT_RE = /(?:https?:\/\/)?(?:maps\.app\.goo\.gl|share\.google|goo\.gl\/maps|g\.co\/maps)\/\S+/i;
+  const SHORT_MAP_RE = /^(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+$/i;
+  const SHORT_MAP_IN_TEXT_RE = /(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+/i;
 
   // Endpoint del risolutore: riceve ?url=<link breve> e deve restituire
   // l'URL finale come JSON {"url":"…"} oppure come testo. Il Worker è in
@@ -3387,7 +3387,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.7'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.8'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),

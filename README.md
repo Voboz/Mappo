@@ -1,7 +1,7 @@
 # Mappo
 
 [![Licenza: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licenza-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENCE)
-[![Versione](https://img.shields.io/badge/versione-1.6.7-teal.svg)](sw.js)
+[![Versione](https://img.shields.io/badge/versione-1.6.8-teal.svg)](sw.js)
 [![PWA](https://img.shields.io/badge/PWA-installabile-green.svg)](manifest.webmanifest)
 
 Web App installabile (PWA) per salvare i tuoi posti preferiti, vederli sulla mappa e ritrovarli in un attimo. Pensata per il telefono, funziona anche offline.
@@ -94,7 +94,7 @@ L'app funziona, ma senza HTTPS Chrome non permette l'installazione completa né 
 
 ### Link Google Maps supportati
 
-Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `share.google`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`), l'app lo cerca con Nominatim.
+Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`), l'app lo cerca con Nominatim.
 
 I link brevi non contengono le coordinate: le ha solo la pagina di destinazione, e il browser non può leggerle (Google non invia header CORS e il redirect resta opaco). L'app li fa quindi seguire dal **Worker Mappo** su Cloudflare (`mappo-link.mappo.workers.dev`), che legge l'header `Location` del redirect e restituisce l'URL finale senza scaricare la pagina di Maps. Il Worker è incluso nel repository: [`worker/link-resolver.js`](worker/link-resolver.js).
 
@@ -190,4 +190,4 @@ Dopo aver modificato i file e ripubblicato, cambia `VERSION` in `sw.js` (es. da 
 
 ---
 
-Versione 1.6.7 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Nominatim/OpenStreetMap.
+Versione 1.6.8 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Nominatim/OpenStreetMap.

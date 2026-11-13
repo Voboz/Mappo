@@ -20,7 +20,7 @@
    il contenuto delle pagine.
    ============================================================ */
 
-const ALLOWED_HOSTS = new Set(['maps.app.goo.gl', 'share.google', 'goo.gl', 'g.co']);
+const ALLOWED_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'g.co']);
 const MAX_TARGET_LENGTH = 2048;
 const UPSTREAM_TIMEOUT = 8000;
 const MAX_REDIRECTS = 4;
@@ -70,8 +70,7 @@ export function checkTarget(raw) {
   const host = url.hostname.toLowerCase();
   if (!ALLOWED_HOSTS.has(host)) return { error: 'host_not_allowed' };
   // goo.gl e g.co ospitano anche altro: si accettano solo i percorsi /maps/.
-  // maps.app.goo.gl e share.google sono host dedicati ai link brevi.
-  if ((host === 'goo.gl' || host === 'g.co') && !/^\/maps(\/|$)/i.test(url.pathname)) {
+  if (host !== 'maps.app.goo.gl' && !/^\/maps(\/|$)/i.test(url.pathname)) {
     return { error: 'not_a_maps_link' };
   }
 
