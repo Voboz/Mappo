@@ -18,8 +18,6 @@
     places: 'ldc.places.v1',
     categories: 'ldc.categories.v1',
     settings: 'ldc.settings.v1',
-    lists: 'ldc.lists.v1',
-    itineraries: 'ldc.itineraries.v1',
   };
 
   const DEFAULT_CATEGORIES = [
@@ -33,8 +31,6 @@
     { id: 'altro', name: 'Altro', color: '#64748b', icon: '📍', custom: false },
   ];
 
-  const DEFAULT_LIST = { id: 'default', name: 'I miei luoghi' };
-  const PLACE_COLLATOR = new Intl.Collator('it', { sensitivity: 'base', numeric: true });
   const PALETTE = [
     '#e11d48', '#f97316', '#f59e0b', '#16a34a', '#0d9488',
     '#0284c7', '#6366f1', '#7c3aed', '#a855f7', '#db2777', '#64748b',
@@ -67,9 +63,6 @@
   // Un link condiviso può dichiarare moltissime categorie: oltre questa
   // soglia sono ignorate, per non creare stato arbitrario nel browser.
   const MAX_IMPORT_CATEGORIES = 200;
-  // Le liste dichiarate da file/link sono limitate per evitare di saturare
-  // lo storage con input non fidato.
-  const MAX_IMPORT_LISTS = 50;
   // Limite prudente: alcuni client di messaggistica troncano URL più lunghi.
   const MAX_SHARE_URL = 2000;
   const MAX_SHARE_TEXT = 4000;
@@ -82,22 +75,16 @@
   const state = {
     places: [],
     categories: [],
-    lists: [],
-    itineraries: [],
-    activeList: 'all',
-    viewMode: 'map',
     settings: {},
     query: '',
     category: 'all',
     favoriteOnly: false,
     status: 'all',
-    distance: null,
     nearMe: false,
     currentPosition: null,
     editingId: null,
     draft: null,
     markers: new Map(),
-    markerCluster: null,
     installPrompt: null,
   };
 
@@ -201,8 +188,6 @@
   function savePlaces() { return writeJSON(STORAGE.places, state.places); }
   function saveCategories() { return writeJSON(STORAGE.categories, state.categories); }
   function saveSettings() { return writeJSON(STORAGE.settings, state.settings); }
-  function saveLists() { return writeJSON(STORAGE.lists, state.lists); }
-  function saveItineraries() { return writeJSON(STORAGE.itineraries, state.itineraries); }
 
   // Copie di sicurezza create da readJSON() quando un dato è illeggibile.
   // Vanno rimosse insieme ai dati, altrimenti resterebbero sul dispositivo.
@@ -351,31 +336,6 @@
     };
   }
 
-  function makeList(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    const id = String(raw.id || '').trim().slice(0, 64) || 'list-' + uid();
-    const name = String(raw.name || '').trim().slice(0, 60);
-    if (!name || id === 'all') return null;
-    return { id, name };
-  }
-
-  function makeItinerary(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    const id = String(raw.id || '').trim().slice(0, 64) || 'it-' + uid();
-    const name = String(raw.name || '').trim().slice(0, 80);
-    if (!name) return null;
-    const placeIds = Array.isArray(raw.placeIds) ? raw.placeIds.map((v) => String(v || '').trim()).filter(Boolean) : [];
-    const start = raw.start && typeof raw.start === 'object' ? raw.start : { type: 'none' };
-    return {
-      id,
-      name,
-      date: raw.date ? String(raw.date).trim().slice(0, 40) : '',
-      placeIds,
-      start: { type: ['none', 'current', 'place'].includes(start.type) ? start.type : 'none', placeId: start.placeId ? String(start.placeId).trim() : '' },
-      createdAt: Number(raw.createdAt) || Date.now(),
-    };
-  }
-
   function parseCoordinate(value) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string' && value.trim() !== '') return Number(value.trim());
@@ -390,17 +350,12 @@
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
     const name = String(raw.name || '').trim().slice(0, 120) || 'Luogo senza nome';
     const categoryId = categories.some((c) => c.id === raw.categoryId) ? raw.categoryId : 'altro';
-    const listIds = Array.isArray(raw.listIds)
-      ? raw.listIds.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 50)
-      : ['default'];
-    if (listIds.length === 0) listIds.push('default');
     return {
       favorite: raw.favorite === true,
       status: PLACE_STATUSES.includes(raw.status) ? raw.status : null,
       id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim().slice(0, 64) : uid(),
       name,
       categoryId,
-      listIds,
       note: String(raw.note || '').slice(0, 1000),
       address: String(raw.address || '').slice(0, 300),
       lat,
@@ -419,34 +374,14 @@
     const seen = new Set();
     state.categories = cats.filter((c) => (seen.has(c.id) ? false : seen.add(c.id)));
 
-    // Liste: migrazione — la lista predefinita esiste sempre.
-    const storedLists = readJSON(STORAGE.lists);
-    let lists = Array.isArray(storedLists) ? storedLists.map(makeList).filter(Boolean) : [];
-    if (!lists.some((l) => l.id === DEFAULT_LIST.id)) lists.unshift({ ...DEFAULT_LIST });
-    const seenLists = new Set();
-    state.lists = lists.filter((l) => (seenLists.has(l.id) ? false : seenLists.add(l.id)));
-
-    const storedItineraries = readJSON(STORAGE.itineraries);
-    state.itineraries = (Array.isArray(storedItineraries) ? storedItineraries.map(makeItinerary).filter(Boolean) : []);
-
     const storedPlaces = readJSON(STORAGE.places);
     const seenPlaces = new Set();
     state.places = (Array.isArray(storedPlaces) ? storedPlaces : [])
       .map((raw) => sanitizePlace(raw))
       .filter((place) => place && (seenPlaces.has(place.id) ? false : seenPlaces.add(place.id)));
-    // I luoghi senza lista valida vanno nella predefinita.
-    for (const place of state.places) {
-      if (!Array.isArray(place.listIds) || place.listIds.length === 0) place.listIds = [DEFAULT_LIST.id];
-      place.listIds = place.listIds.filter((id) => state.lists.some((l) => l.id === id));
-      if (place.listIds.length === 0) place.listIds = [DEFAULT_LIST.id];
-    }
 
     const settings = readJSON(STORAGE.settings);
     state.settings = settings && typeof settings === 'object' ? settings : {};
-
-    // Persiste la migrazione (liste + listIds) al primo avvio.
-    if (!Array.isArray(storedLists)) saveLists();
-    if (!Array.isArray(storedPlaces) || (Array.isArray(storedPlaces) && storedPlaces.some((p) => !Array.isArray(p && p.listIds)))) savePlaces();
   }
 
   /* ------------------------------ Mappa ------------------------------ */
@@ -556,16 +491,11 @@
 
   function makeMarkerIcon(place) {
     const cat = getCategory(place.categoryId);
-    const statusColor = place.status === 'da_visitare' ? '#f59e0b'
-      : place.status === 'visitato' ? '#16a34a'
-      : '#64748b';
-    const favoriteBadge = place.favorite ? '<span class="pin-fav">★</span>' : '';
     const html = '<div class="pin-wrap">'
       + '<svg viewBox="0 0 40 52" aria-hidden="true">'
       + '<path d="M20 1.4C9.8 1.4 1.4 9.8 1.4 20c0 13.9 18.6 30.6 18.6 30.6S38.6 33.9 38.6 20C38.6 9.8 30.2 1.4 20 1.4Z" '
-      + 'fill="' + statusColor + '" stroke="#fff" stroke-width="2.6"/></svg>'
-      + '<span class="pin-emoji">' + cat.icon + '</span>'
-      + favoriteBadge + '</div>';
+      + 'fill="' + cat.color + '" stroke="#fff" stroke-width="2.6"/></svg>'
+      + '<span class="pin-emoji">' + cat.icon + '</span></div>';
     return L.divIcon({
       className: 'place-marker',
       html,
@@ -578,14 +508,10 @@
   function renderMarkers() {
     for (const marker of state.markers.values()) marker.remove();
     state.markers.clear();
-    if (state.markerCluster) {
-      state.markerCluster.remove();
-      state.markerCluster = null;
-    }
+    // Senza mappa non ci sono marker da mostrare, ma l'app resta viva.
     if (!map) return;
 
-    const cluster = L.markerClusterGroup({ maxClusterRadius: 50 });
-    for (const place of getFilteredPlaces()) {
+    for (const place of state.places) {
       const marker = L.marker([place.lat, place.lng], {
         icon: makeMarkerIcon(place),
         title: place.name,
@@ -602,11 +528,10 @@
       });
       marker.on('click', () => highlightMarker(place.id));
       marker.on('popupclose', () => highlightMarker(null));
-      cluster.addLayer(marker);
+      marker.addTo(map);
       state.markers.set(place.id, marker);
     }
-    cluster.addTo(map);
-    state.markerCluster = cluster;
+    applyMarkerFilter();
   }
 
   function highlightMarker(id) {
@@ -618,9 +543,21 @@
   }
 
   function applyMarkerFilter() {
-    // Il gruppo cluster va ricostruito: i marker raggruppati non sono nel DOM
-    // e non si possono nascondere via CSS senza falsare i conteggi.
-    if (map) renderMarkers();
+    const visible = new Set(getFilteredPlaces().map((p) => p.id));
+    for (const [id, marker] of state.markers) {
+      const el = marker.getElement();
+      if (!el) continue;
+      const show = visible.has(id);
+      el.classList.toggle('is-hidden', !show);
+      if (show) {
+        el.setAttribute('tabindex', '0');
+        el.removeAttribute('aria-hidden');
+      } else {
+        marker.closePopup();
+        el.setAttribute('tabindex', '-1');
+        el.setAttribute('aria-hidden', 'true');
+      }
+    }
   }
 
   /* --------------------------- Popup luogo --------------------------- */
@@ -716,41 +653,35 @@
     return true;
   }
 
-  function matchesDistance(place) {
-    if (!state.distance) return true;
-    if (!state.currentPosition) return true;
-    const { lat, lng } = state.currentPosition;
-    return haversine(lat, lng, place.lat, place.lng) / 1000 <= state.distance;
+  function hasActiveFilters() {
+    return Boolean(state.query) || state.category !== 'all' || state.favoriteOnly || state.status !== 'all';
   }
 
   function getFilteredPlaces() {
     const needle = fold(state.query);
     const filtered = state.places
-      .filter((p) => (state.activeList === 'all' || (Array.isArray(p.listIds) && p.listIds.includes(state.activeList)))
-        && (state.category === 'all' || p.categoryId === state.category)
+      .filter((p) => (state.category === 'all' || p.categoryId === state.category)
         && matchesQuickFilters(p)
-        && matchesQuery(p, needle)
-        && matchesDistance(p));
+        && matchesQuery(p, needle));
 
     if (state.nearMe && state.currentPosition) {
       const { lat, lng } = state.currentPosition;
       return filtered
         .map((place) => ({ place, meters: haversine(lat, lng, place.lat, place.lng) }))
         .sort((a, b) => (a.meters - b.meters)
-          || PLACE_COLLATOR.compare(a.place.name, b.place.name))
+          || a.place.name.localeCompare(b.place.name, 'it', { sensitivity: 'base', numeric: true }))
         .map((entry) => entry.place);
     }
 
     return filtered
-      .sort((a, b) => PLACE_COLLATOR.compare(a.name, b.name));
+      .sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base', numeric: true }));
   }
 
   /* --------------------------- Rendering --------------------------- */
 
   function renderChips() {
     const needle = fold(state.query);
-    const base = state.places.filter((p) => (state.activeList === 'all' || (Array.isArray(p.listIds) && p.listIds.includes(state.activeList)))
-      && matchesQuickFilters(p) && matchesQuery(p, needle) && matchesDistance(p));
+    const base = state.places.filter((p) => matchesQuickFilters(p) && matchesQuery(p, needle));
     const counts = new Map();
     for (const p of base) counts.set(p.categoryId, (counts.get(p.categoryId) || 0) + 1);
 
@@ -786,76 +717,12 @@
     button.setAttribute('aria-pressed', String(pressed));
   }
 
-  function hasActiveFilters() {
-    return Boolean(state.query) || state.category !== 'all' || state.favoriteOnly || state.status !== 'all' || Boolean(state.distance) || state.nearMe;
-  }
-
   function renderFilters() {
     setFilterPressed($('filterFavorites'), state.favoriteOnly);
     setFilterPressed($('filterTodo'), state.status === 'da_visitare');
     setFilterPressed($('filterDone'), state.status === 'visitato');
-    updateDistanceButtons();
   }
 
-  function clearAllFilters() {
-    state.query = '';
-    state.category = 'all';
-    state.favoriteOnly = false;
-    state.status = 'all';
-    state.distance = null;
-    state.nearMe = false;
-    const searchInput = $('searchInput');
-    if (searchInput) searchInput.value = '';
-    const btnClearSearch = $('btnClearSearch');
-    if (btnClearSearch) btnClearSearch.hidden = true;
-    renderFilters();
-    renderNearMe();
-    renderActiveFilters();
-    renderChips();
-    renderList();
-  }
-
-  function renderActiveFilters() {
-    const container = $('activeFilters');
-    const btnClear = $('btnClearFilters');
-    if (!container) return;
-    container.textContent = '';
-    const chips = [];
-    if (state.query) {
-      chips.push({ label: 'Ricerca: ' + state.query, onRemove: () => { state.query = ''; const i = $('searchInput'); if (i) i.value = ''; const c = $('btnClearSearch'); if (c) c.hidden = true; rerenderFilters(); } });
-    }
-    if (state.category !== 'all') {
-      const cat = getCategory(state.category);
-      chips.push({ label: cat ? cat.name : state.category, onRemove: () => { state.category = 'all'; rerenderFilters(); } });
-    }
-    if (state.favoriteOnly) chips.push({ label: 'Preferiti', onRemove: () => { state.favoriteOnly = false; rerenderFilters(); } });
-    if (state.status === 'da_visitare') chips.push({ label: 'Da visitare', onRemove: () => { state.status = 'all'; rerenderFilters(); } });
-    if (state.status === 'visitato') chips.push({ label: 'Visitati', onRemove: () => { state.status = 'all'; rerenderFilters(); } });
-    if (state.distance) chips.push({ label: 'Entro ' + state.distance + ' km', onRemove: () => { state.distance = null; updateDistanceButtons(); rerenderFilters(); } });
-    if (state.nearMe) chips.push({ label: 'Vicino a me', onRemove: () => { state.nearMe = false; renderNearMe(); rerenderFilters(); } });
-
-    for (const chip of chips) {
-      const el = h('button', { class: 'filter-chip active removable', type: 'button', text: chip.label + ' ×' });
-      el.addEventListener('click', chip.onRemove);
-      container.appendChild(el);
-    }
-    if (btnClear) btnClear.hidden = chips.length === 0;
-  }
-
-  function rerenderFilters() {
-    renderFilters();
-    renderActiveFilters();
-    renderChips();
-    renderList();
-  }
-
-  function updateDistanceButtons() {
-    document.querySelectorAll('.distance-filters .filter-chip').forEach((btn) => {
-      const km = Number(btn.getAttribute('data-km'));
-      btn.classList.toggle('is-on', state.distance === km);
-      btn.setAttribute('aria-pressed', String(state.distance === km));
-    });
-  }
   function renderNearMe() {
     const btn = $('btnNearMe');
     if (!btn) return;
@@ -871,7 +738,6 @@
   function toggleFavoritesFilter() {
     state.favoriteOnly = !state.favoriteOnly;
     renderFilters();
-    renderActiveFilters();
     renderChips();
     renderList();
   }
@@ -879,7 +745,6 @@
   function toggleStatusFilter(status) {
     state.status = state.status === status ? 'all' : status;
     renderFilters();
-    renderActiveFilters();
     renderChips();
     renderList();
   }
@@ -910,12 +775,8 @@
           state.category = 'all';
           state.favoriteOnly = false;
           state.status = 'all';
-          state.distance = null;
-          state.nearMe = false;
           $('btnClearSearch').hidden = true;
           renderFilters();
-          renderNearMe();
-          renderActiveFilters();
           renderChips();
           renderList();
         },
@@ -967,8 +828,6 @@
       place.favorite = !next;
       return;
     }
-    const marker = state.markers.get(place.id);
-    if (marker) marker.setIcon(makeMarkerIcon(place));
     renderChips();
     renderListPreservingScroll();
   }
@@ -982,8 +841,6 @@
     if (!savePlaces()) {
       place.status = previous;
     }
-    const marker = state.markers.get(place.id);
-    if (marker) marker.setIcon(makeMarkerIcon(place));
     renderChips();
     renderListPreservingScroll();
   }
@@ -1047,18 +904,16 @@
   }
 
   function renderAll() {
-    renderListSelect();
+    renderMarkers();
     renderChips();
     renderFilters();
     renderNearMe();
-    renderActiveFilters();
     renderList();
   }
 
   function setCategory(id) {
     state.category = id;
     renderChips();
-    renderActiveFilters();
     renderList();
   }
 
@@ -1076,12 +931,7 @@
     setTimeout(() => {
       if (token !== flyToken) return;
       const marker = state.markers.get(id);
-      if (!marker) return;
-      if (state.markerCluster) {
-        state.markerCluster.zoomToShowLayer(marker, () => marker.openPopup());
-      } else {
-        marker.openPopup();
-      }
+      if (marker) marker.openPopup();
     }, 740);
   }
 
@@ -1274,7 +1124,6 @@
     $('placeStatus').value = '';
     setFavoriteUI(false);
     renderCategorySelect(state.settings.lastCategory || 'preferiti');
-    renderPlaceLists(state.activeList !== 'all' ? [state.activeList] : [DEFAULT_LIST.id]);
     resetSheetTitles(false);
     updateDraftUI();
     openSheetOverlay(true);
@@ -1298,7 +1147,6 @@
     $('placeStatus').value = PLACE_STATUSES.includes(place.status) ? place.status : '';
     setFavoriteUI(place.favorite);
     renderCategorySelect(place.categoryId);
-    renderPlaceLists(place.listIds || [DEFAULT_LIST.id]);
     resetSheetTitles(true);
     updateDraftUI();
     openSheetOverlay(true);
@@ -1346,40 +1194,6 @@
     }
     if (selectedId && state.categories.some((c) => c.id === selectedId)) {
       select.value = selectedId;
-    }
-  }
-
-  function renderListSelect() {
-    const select = $('listSelect');
-    if (!select) return;
-    const current = state.activeList;
-    select.textContent = '';
-    select.appendChild(h('option', { value: 'all', text: 'Tutti i luoghi' }));
-    for (const list of state.lists) {
-      select.appendChild(h('option', { value: list.id, text: list.name }));
-    }
-    if (current === 'all' || state.lists.some((l) => l.id === current)) {
-      select.value = current;
-    } else {
-      state.activeList = 'all';
-      select.value = 'all';
-    }
-  }
-
-  function renderPlaceLists(selectedIds) {
-    const container = $('placeLists');
-    if (!container) return;
-    container.textContent = '';
-    const ids = Array.isArray(selectedIds) ? selectedIds : [];
-    for (const list of state.lists) {
-      const label = document.createElement('label');
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.value = list.id;
-      if (ids.includes(list.id)) input.checked = true;
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(' ' + list.name));
-      container.appendChild(label);
     }
   }
 
@@ -1645,8 +1459,6 @@
     const favorite = isFavoriteSelected();
     const statusValue = $('placeStatus').value;
     const status = PLACE_STATUSES.includes(statusValue) ? statusValue : null;
-    const selectedLists = Array.from(document.querySelectorAll('#placeLists input:checked')).map((el) => el.value);
-    const listIds = selectedLists.length ? selectedLists : [state.activeList !== 'all' ? state.activeList : DEFAULT_LIST.id];
     let place;
 
     if (wasEditing) {
@@ -1669,7 +1481,6 @@
       };
       place.name = name;
       place.categoryId = categoryId;
-      place.listIds = listIds;
       place.note = note;
       place.favorite = favorite;
       place.status = status;
@@ -1686,7 +1497,6 @@
         id: uid(),
         name,
         categoryId,
-        listIds,
         note,
         favorite,
         status,
@@ -2307,17 +2117,13 @@
 
   /* -------------------------- Backup JSON ---------------------------- */
 
-  function currentBackup(scope = 'all') {
-    const places = scope === 'all' ? state.places : state.places.filter((p) => Array.isArray(p.listIds) && p.listIds.includes(scope));
-    const lists = scope === 'all' ? state.lists : state.lists.filter((l) => l.id === scope);
+  function currentBackup() {
     return {
       app: 'Mappo',
       version: 1,
       exportedAt: new Date().toISOString(),
       categories: state.categories,
-      lists,
-      itineraries: state.itineraries,
-      places,
+      places: state.places,
     };
   }
 
@@ -2337,8 +2143,7 @@
     // Neutralizza la CSV injection (formula injection): un nome importato
     // che inizia con = + - @ verrebbe eseguito come formula da Excel,
     // LibreOffice e Google Sheets. L'apostrofo iniziale lo rende testo.
-    // I numeri (latitudini/longitudini negative) restano numeri.
-    if (typeof value !== 'number' && /^[=+\-@\t\r]/.test(text)) text = "'" + text;
+    if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
     return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
   }
 
@@ -2451,32 +2256,21 @@
     return 'downloaded';
   }
 
-  function exportData(format, scope = 'all') {
-    const allPlaces = state.places;
-    const targetPlaces = scope === 'all' ? allPlaces : allPlaces.filter((p) => Array.isArray(p.listIds) && p.listIds.includes(scope));
-    if (targetPlaces.length === 0) {
+  function exportData(format) {
+    if (state.places.length === 0) {
       showToast('Non ci sono luoghi da esportare', { tone: 'error' });
       return;
     }
-    const previousPlaces = state.places;
-    let content;
-    let spec;
-    state.places = targetPlaces;
-    try {
-      const formats = {
-        json: { mime: 'application/json', content: () => JSON.stringify(currentBackup(scope), null, 2) },
-        geojson: { mime: 'application/geo+json', content: serializeGeoJson },
-        kml: { mime: 'application/vnd.google-earth.kml+xml', content: serializeKml },
-        gpx: { mime: 'application/gpx+xml', content: serializeGpx },
-        csv: { mime: 'text/csv', content: serializeCsv },
-      };
-      spec = formats[format];
-      if (!spec) return;
-      content = spec.content();
-    } finally {
-      state.places = previousPlaces;
-    }
-    saveExportFile(format, content, spec.mime)
+    const formats = {
+      json: { mime: 'application/json', content: () => JSON.stringify(currentBackup(), null, 2) },
+      geojson: { mime: 'application/geo+json', content: serializeGeoJson },
+      kml: { mime: 'application/vnd.google-earth.kml+xml', content: serializeKml },
+      gpx: { mime: 'application/gpx+xml', content: serializeGpx },
+      csv: { mime: 'text/csv', content: serializeCsv },
+    };
+    const spec = formats[format];
+    if (!spec) return;
+    saveExportFile(format, spec.content(), spec.mime)
       .then((outcome) => {
         if (outcome === 'aborted') return;
         showToast(outcome === 'shared'
@@ -2491,13 +2285,6 @@
       showToast('Non ci sono luoghi da esportare', { tone: 'error' });
       return;
     }
-    const scopeSelect = h('select', { id: 'exportScope' });
-    scopeSelect.appendChild(h('option', { value: 'all', text: 'Tutti i luoghi' }));
-    for (const list of state.lists) {
-      const opt = h('option', { value: list.id, text: list.name });
-      if (list.id === state.activeList) opt.selected = true;
-      scopeSelect.appendChild(opt);
-    }
     const options = [
       ['geojson', 'GeoJSON', 'Punti con nome, categoria, nota, preferito e stato'],
       ['kml', 'KML', 'Per Google Earth e My Maps'],
@@ -2506,15 +2293,12 @@
       ['json', 'JSON (backup)', "Formato completo dell'app, reimportabile"],
     ];
     const body = h('div', {},
-      h('div', { class: 'field' },
-        h('label', { for: 'exportScope', text: 'Ambito' }),
-        scopeSelect),
       h('div', { class: 'export-formats' }, options.map(([format, label, description]) => h('button', {
         type: 'button',
         class: 'export-option',
         onclick: () => {
           requestCloseOverlay('modal');
-          exportData(format, $('exportScope').value || 'all');
+          exportData(format);
         },
       }, h('strong', { text: label }), h('span', { text: description })))),
       h('p', { class: 'import-note', text: 'Sui dispositivi compatibili si apre il menu di condivisione; altrimenti il file viene scaricato.' })
@@ -2602,9 +2386,6 @@
   // così il link resta corto dopo la compressione.
   function sharePayload() {
     const categories = [];
-    const listIds = [...new Set(state.places.flatMap((p) => Array.isArray(p.listIds) ? p.listIds : []))];
-    const lists = listIds.map((id) => state.lists.find((l) => l.id === id)).filter(Boolean);
-    const listIndex = new Map(lists.map((l, i) => [l.id, i]));
     const places = state.places.map((place) => {
       const cat = getCategory(place.categoryId);
       let index = categories.findIndex((item) => item.name === cat.name);
@@ -2612,9 +2393,6 @@
         categories.push({ name: cat.name, color: cat.color, icon: cat.icon });
         index = categories.length - 1;
       }
-      const placeLists = (Array.isArray(place.listIds) ? place.listIds : [])
-        .map((id) => listIndex.get(id))
-        .filter((i) => Number.isInteger(i));
       return [
         place.name,
         Number(place.lat),
@@ -2624,22 +2402,13 @@
         place.favorite ? 1 : 0,
         place.status || '',
         place.address || '',
-        placeLists,
       ];
     });
-    return { v: 1, c: categories.map((cat) => [cat.name, cat.color, cat.icon]), l: lists.map((l) => [l.id, l.name]), p: places };
+    return { v: 1, c: categories.map((cat) => [cat.name, cat.color, cat.icon]), p: places };
   }
 
-  async function buildShareLink(scope = 'all') {
-    const savedPlaces = state.places;
-    const targetPlaces = scope === 'all' ? savedPlaces : savedPlaces.filter((p) => Array.isArray(p.listIds) && p.listIds.includes(scope));
-    let bytes;
-    state.places = targetPlaces;
-    try {
-      bytes = new TextEncoder().encode(JSON.stringify(sharePayload()));
-    } finally {
-      state.places = savedPlaces;
-    }
+  async function buildShareLink() {
+    const bytes = new TextEncoder().encode(JSON.stringify(sharePayload()));
     const packed = await compressBytes(bytes);
     const token = packed
       ? packed.prefix + bytesToBase64Url(packed.bytes)
@@ -2699,11 +2468,10 @@
   }
 
   async function startShareLink() {
-    const scope = state.activeList;
     showToast('Preparazione del link…', { duration: 60000 });
     let url;
     try {
-      url = await buildShareLink(scope);
+      url = await buildShareLink();
     } catch (_) {
       hideToast();
       showToast('Impossibile creare il link', { tone: 'error' });
@@ -2834,21 +2602,6 @@
         return makeCategory({ id, name: categoryNames[i], color: raw[1], icon: raw[2], custom: true });
       })
       .filter(Boolean);
-    const rawLists = (Array.isArray(data.l) ? data.l : []).slice(0, MAX_IMPORT_LISTS);
-    const listIdMap = [];
-    const extraLists = [];
-    for (const raw of rawLists) {
-      const n = normalizeListRaw(raw);
-      if (!n || !n.name) { listIdMap.push(''); continue; }
-      const name = cleanText(n.name, 60);
-      const existing = state.lists.find((l) => fold(l.name) === fold(name));
-      const reservedId = n.id === 'all' || n.id === 'default' || n.id === DEFAULT_LIST.id;
-      let id = existing ? existing.id : (!reservedId && n.id && !state.lists.some((l) => l.id === n.id) ? n.id : 'list-' + uid().slice(0, 8));
-      if (!existing && !extraLists.some((l) => l.id === id) && !state.lists.some((l) => l.id === id)) {
-        extraLists.push({ id, name });
-      }
-      listIdMap.push(id);
-    }
 
     const places = [];
     const skipped = [];
@@ -2877,15 +2630,10 @@
         status: PLACE_STATUSES.includes(raw[6]) ? raw[6] : null,
         categoryId: validIndex ? categoryIds[index] : '',
         categoryName: validIndex ? categoryNames[index] : '',
-        listIds: ((Array.isArray(raw[8]) ? raw[8] : [])
-          .map((i) => (Number.isInteger(i) && i >= 0 && i < listIdMap.length ? listIdMap[i] : null))
-          .filter(Boolean)),
         createdAt: Date.now(),
       });
-      const _last = places[places.length - 1];
-      if (!_last.listIds || _last.listIds.length === 0) _last.listIds = [DEFAULT_LIST.id];
     }
-    return { format: 'link', places, categories: extraCategories, lists: extraLists, skipped };
+    return { format: 'link', places, categories: extraCategories, skipped };
   }
 
   async function handleShareLink() {
@@ -3166,35 +2914,12 @@
     return { format: 'geojson', places, categories: [], skipped, shortLinks };
   }
 
-  function normalizeListRaw(raw) {
-    if (Array.isArray(raw)) return { id: String(raw[0] || '').trim().slice(0, 64), name: String(raw[1] || '').trim().slice(0, 60) };
-    if (raw && typeof raw === 'object') return { id: String(raw.id || '').trim().slice(0, 64), name: String(raw.name || '').trim().slice(0, 60) };
-    return null;
-  }
-
   function parseLegacyBackup(data, rawPlaces) {
     const incomingCats = !Array.isArray(data) && Array.isArray(data.categories)
       ? data.categories.map((raw) => makeCategory(raw)).filter(Boolean)
       : [];
     const knownIds = new Set(state.categories.map((c) => c.id));
     const available = state.categories.concat(incomingCats.filter((cat) => !knownIds.has(cat.id)));
-    const incomingLists = (!Array.isArray(data) && Array.isArray(data.lists) ? data.lists : []).slice(0, MAX_IMPORT_LISTS);
-    const listIdMap = new Map();
-    const extraLists = [];
-    for (const raw of incomingLists) {
-      const n = normalizeListRaw(raw);
-      if (!n || !n.name) continue;
-      const name = cleanText(n.name, 60);
-      const existing = state.lists.find((l) => fold(l.name) === fold(name));
-      const reservedId = n.id === 'all' || n.id === 'default' || n.id === DEFAULT_LIST.id;
-      let id = existing ? existing.id : (!reservedId && n.id && !state.lists.some((l) => l.id === n.id) ? n.id : 'list-' + uid().slice(0, 8));
-      if (!existing && !extraLists.some((l) => l.id === id) && !state.lists.some((l) => l.id === id)) {
-        extraLists.push({ id, name });
-      }
-      if (n.id) listIdMap.set(n.id, id);
-      listIdMap.set(name, id);
-      listIdMap.set(fold(name), id);
-    }
     const places = [];
     const skipped = [];
     for (const raw of rawPlaces) {
@@ -3208,11 +2933,6 @@
         continue;
       }
       const cat = available.find((c) => c.id === place.categoryId);
-      const rawListIds = Array.isArray(raw.listIds) ? raw.listIds
-        : (Array.isArray(raw.lists) ? raw.lists : []);
-      const mapped = rawListIds
-        .map((v) => listIdMap.get(String(v)) || listIdMap.get(cleanText(v, 60)) || listIdMap.get(fold(String(v))))
-        .filter(Boolean);
       places.push({
         name: place.name,
         lat: place.lat,
@@ -3223,11 +2943,10 @@
         status: place.status,
         categoryId: place.categoryId,
         categoryName: cat ? cat.name : '',
-        listIds: mapped.length ? mapped : [DEFAULT_LIST.id],
         createdAt: place.createdAt,
       });
     }
-    return { format: 'json', places, categories: incomingCats, lists: extraLists, skipped };
+    return { format: 'json', places, categories: incomingCats, skipped };
   }
 
   function parseJsonImport(text, filename) {
@@ -3525,14 +3244,6 @@
   async function startImport(payload, mode) {
     if (importRunning) return;
     importRunning = true;
-    const snapshotLists = state.lists.slice();
-    // Unisci le liste del file/link a quelle esistenti (per nome).
-    if (Array.isArray(payload.lists) && payload.lists.length) {
-      for (const l of payload.lists) {
-        if (!state.lists.some((x) => x.id === l.id)) state.lists.push(l);
-      }
-      saveLists();
-    }
     try {
       const pending = payload.places.filter((entry) => !validLatLng(entry.lat, entry.lng));
       const geocodeFailures = [];
@@ -3599,10 +3310,6 @@
           id: uid(),
           name: entry.name,
           categoryId,
-          listIds: (() => {
-            const valid = Array.isArray(entry.listIds) ? entry.listIds.filter((id) => state.lists.some((l) => l.id === id)) : [];
-            return valid.length ? valid : [DEFAULT_LIST.id];
-          })(),
           note: entry.note,
           favorite: entry.favorite,
           status: entry.status,
@@ -3622,10 +3329,7 @@
       if (!categoriesSaved || !placesSaved) {
         state.categories = snapshotCategories;
         state.places = snapshotPlaces;
-        state.lists = snapshotLists;
-        saveCategories();
-        savePlaces();
-        saveLists();
+        if (!categoriesSaved || !placesSaved) saveCategories();
         renderAll();
         showToast('Importazione non riuscita: spazio esaurito', { tone: 'error' });
         return;
@@ -3683,7 +3387,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.16'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.8'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3776,28 +3480,24 @@
 
   function confirmClearAll() {
     showModal({
-      title: 'Cancellare tutti i dati?',
-      body: h('p', { text: 'Questa operazione rimuove luoghi, liste e itinerari salvati su questo dispositivo e non può essere annullata.' }),
+      title: 'Cancellare tutti i luoghi?',
+      body: h('p', { text: 'Questa operazione rimuove tutti i luoghi salvati su questo dispositivo e non può essere annullata.' }),
       actions: [
         { label: 'Annulla', kind: 'ghost' },
         {
           label: 'Cancella tutto',
           kind: 'danger',
           onClick: () => {
-            const previous = { places: state.places, lists: state.lists, itineraries: state.itineraries };
+            const previous = state.places;
             state.places = [];
-            state.lists = [{ ...DEFAULT_LIST }];
-            state.itineraries = [];
             if (!savePlaces()) {
-              Object.assign(state, previous);
+              state.places = previous;
               return false;
             }
-            saveLists();
-            saveItineraries();
             removeCorruptCopies();
             if (map) map.closePopup();
             renderAll();
-            showToast('Tutti i dati sono stati cancellati');
+            showToast('Tutti i luoghi sono stati cancellati');
           },
         },
       ],
@@ -3961,402 +3661,15 @@
 
   /* ------------------------------ Eventi ----------------------------- */
 
-  /* ------------------------- Itinerari ------------------------- */
-
-  function posLatLng(pos) {
-    if (!pos) return null;
-    if (pos.coords) return { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    if (Number.isFinite(pos.lat)) return { lat: pos.lat, lng: pos.lng };
-    return null;
-  }
-
-  function itineraryDistanceKm(work) {
-    const pts = [];
-    const sp = work.start.type === 'current' ? posLatLng(state.currentPosition)
-      : (work.start.type === 'place' ? getPlace(work.start.placeId) : null);
-    if (sp) pts.push(sp);
-    for (const id of work.placeIds) {
-      const p = getPlace(id);
-      if (p) pts.push(p);
-    }
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) {
-      total += haversine(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng);
-    }
-    return total / 1000;
-  }
-
-  function optimizeItinerary(work) {
-    const remaining = new Set(work.placeIds);
-    const ordered = [];
-    let cur = null;
-    if (work.start.type === 'current') cur = posLatLng(state.currentPosition);
-    else if (work.start.type === 'place') cur = getPlace(work.start.placeId);
-    if (!cur && remaining.size) {
-      const firstId = [...remaining][0];
-      const p = getPlace(firstId);
-      if (p) { ordered.push(firstId); remaining.delete(firstId); cur = p; }
-    }
-    while (remaining.size) {
-      let best = null, bestD = Infinity;
-      for (const id of remaining) {
-        const p = getPlace(id);
-        if (!p || !cur) continue;
-        const d = haversine(cur.lat, cur.lng, p.lat, p.lng);
-        if (d < bestD) { bestD = d; best = id; }
-      }
-      if (!best) break;
-      ordered.push(best);
-      remaining.delete(best);
-      const p = getPlace(best);
-      if (p) cur = p;
-    }
-    work.placeIds = ordered;
-  }
-
-  function openItineraryCreator() {
-    const candidates = (state.activeList === 'all' ? state.places : state.places.filter((p) => Array.isArray(p.listIds) && p.listIds.includes(state.activeList)));
-    if (candidates.length === 0) {
-      showToast('Nessun luogo da selezionare', { tone: 'error' });
-      return;
-    }
-    const selected = new Set();
-    const nameInput = h('input', { type: 'text', maxlength: 80, placeholder: 'Es. Viaggio in Giappone' });
-    const dateInput = h('input', { type: 'date' });
-    const list = h('div', { class: 'import-preview' });
-    for (const p of candidates) {
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.addEventListener('change', () => { if (cb.checked) selected.add(p.id); else selected.delete(p.id); });
-      list.appendChild(h('label', {}, cb, h('span', { class: 'import-name', text: p.name })));
-    }
-    const body = h('div', {},
-      h('div', { class: 'field' }, h('label', { text: 'Nome itinerario' }), nameInput),
-      h('div', { class: 'field' }, h('label', { text: 'Data (facoltativa)' }), dateInput),
-      list
-    );
-    showModal({
-      title: 'Nuovo itinerario',
-      body,
-      actions: [
-        { label: 'Annulla', kind: 'ghost' },
-        {
-          label: 'Crea',
-          kind: 'primary',
-          onClick: () => {
-            const ids = candidates.filter((p) => selected.has(p.id)).map((p) => p.id);
-            if (ids.length === 0) {
-              showToast('Seleziona almeno un luogo', { tone: 'error' });
-              return false;
-            }
-            const work = { id: 'it-' + uid(), name: nameInput.value.trim() || 'Itinerario', date: dateInput.value, placeIds: ids, start: { type: 'none' }, createdAt: Date.now() };
-            state.itineraries.push(work);
-            saveItineraries();
-            closeOverlayThen('modal', () => openItineraryEditor(work));
-            return false;
-          },
-        },
-      ],
-    });
-  }
-
-  function buildGoogleMapsUrls(work, mode) {
-    const places = work.placeIds.map(getPlace).filter(Boolean);
-    if (places.length === 0) return [];
-    let originStr = null;
-    let originPlace = null;
-    if (work.start.type === 'current') originStr = 'Current Location';
-    else if (work.start.type === 'place') {
-      const sp = getPlace(work.start.placeId);
-      if (sp) originPlace = sp;
-    }
-    let origin, destination, waypoints;
-    if (work.start.type === 'none' || !originStr && !originPlace) {
-      origin = places[0];
-      destination = places[places.length - 1];
-      waypoints = places.slice(1, -1);
-    } else {
-      origin = originPlace || null;
-      destination = places[places.length - 1];
-      waypoints = places.slice(0, -1);
-    }
-    const originParam = originStr ? originStr : (origin.lat + ',' + origin.lng);
-    const toParam = (p) => p.lat + ',' + p.lng;
-    const MAX_WP = 8;
-    const urls = [];
-    // Sequenza completa di tappe: origine + waypoint + destinazione.
-    const stops = [originParam, ...waypoints.map(toParam), toParam(destination)];
-    if (stops.length - 1 <= MAX_WP + 1) {
-      const params = new URLSearchParams();
-      params.set('api', '1');
-      params.set('origin', stops[0]);
-      params.set('destination', stops[stops.length - 1]);
-      if (stops.length > 2) params.set('waypoints', stops.slice(1, -1).join('|'));
-      params.set('travelmode', mode);
-      urls.push('https://www.google.com/maps/dir/?' + params.toString());
-    } else {
-      // Divide in tratte concatenate: ogni tratta ha origine, al massimo
-      // MAX_WP tappe intermedie e destinazione (che è l'origine della tratta
-      // successiva), così nessuna tappa viene persa o duplicata.
-      let cursor = 0;
-      while (cursor < stops.length - 1) {
-        const segEnd = Math.min(cursor + MAX_WP + 1, stops.length - 1);
-        const chunk = stops.slice(cursor, segEnd + 1);
-        const params = new URLSearchParams();
-        params.set('api', '1');
-        params.set('origin', chunk[0]);
-        params.set('destination', chunk[chunk.length - 1]);
-        if (chunk.length > 2) params.set('waypoints', chunk.slice(1, -1).join('|'));
-        params.set('travelmode', mode);
-        urls.push('https://www.google.com/maps/dir/?' + params.toString());
-        cursor = segEnd;
-      }
-    }
-    return urls;
-  }
-
-  function openGoogleMapsItinerary(work, mode) {
-    const urls = buildGoogleMapsUrls(work, mode);
-    if (urls.length === 0) {
-      showToast('Nessun luogo nell\'itinerario', { tone: 'error' });
-      return;
-    }
-    if (urls.length === 1) {
-      window.open(urls[0], '_blank', 'noopener');
-      return;
-    }
-    const body = h('div', {},
-      h('p', { text: 'L\'itinerario supera il numero massimo di tappe per un singolo link. Aprilo in più tratte:' }),
-      h('div', { class: 'export-formats' }, urls.map((u, i) => h('button', {
-        type: 'button',
-        class: 'export-option',
-        onclick: () => window.open(u, '_blank', 'noopener'),
-      }, h('strong', { text: 'Tratta ' + (i + 1) }), h('span', { text: 'Apri in Google Maps' }))))
-    );
-    showModal({ title: 'Itinerario in più tratte', body, actions: [{ label: 'Chiudi', kind: 'primary' }] });
-  }
-
-  function markItineraryVisited(ids) {
-    for (const id of ids) {
-      const p = getPlace(id);
-      if (p) p.status = 'visitato';
-    }
-    if (!savePlaces()) {
-      showToast('Salvataggio non riuscito: spazio esaurito', { tone: 'error' });
-      return;
-    }
-    renderAll();
-    showToast('Luoghi segnati come visitati', { tone: 'success' });
-  }
-
-  function openItineraryEditor(work) {
-    const w = { ...work, placeIds: [...work.placeIds], start: { ...work.start } };
-    function rebuild() {
-      const nameEl = document.getElementById('itName');
-      if (nameEl) w.name = nameEl.value;
-      const dateEl = document.getElementById('itDate');
-      if (dateEl) w.date = dateEl.value;
-      const startEl = document.getElementById('itStart');
-      if (startEl) {
-        const v = startEl.value;
-        if (v === 'none') w.start = { type: 'none' };
-        else if (v === 'current') w.start = { type: 'current' };
-        else { w.start = { type: 'place', placeId: v.slice(6) }; }
-      }
-      const modeEl = document.getElementById('itMode');
-      const mode = modeEl ? modeEl.value : 'driving';
-
-      const listEl = h('div', { class: 'import-preview' });
-      w.placeIds.forEach((id, idx) => {
-        const p = getPlace(id);
-        if (!p) return;
-        listEl.appendChild(h('div', { class: 'import-name' },
-          h('span', { text: (idx + 1) + '. ' + p.name }),
-          h('button', { type: 'button', class: 'btn small soft', onclick: () => { if (idx > 0) { [w.placeIds[idx - 1], w.placeIds[idx]] = [w.placeIds[idx], w.placeIds[idx - 1]]; rebuild(); } } }, '↑'),
-          h('button', { type: 'button', class: 'btn small soft', onclick: () => { if (idx < w.placeIds.length - 1) { [w.placeIds[idx + 1], w.placeIds[idx]] = [w.placeIds[idx], w.placeIds[idx + 1]]; rebuild(); } } }, '↓'),
-          h('button', { type: 'button', class: 'btn small soft', onclick: () => { w.placeIds.splice(idx, 1); rebuild(); } }, '×')
-        ));
-      });
-
-      const startSelect = h('select', { id: 'itStart' });
-      startSelect.appendChild(h('option', { value: 'none', text: 'Nessuno' }));
-      startSelect.appendChild(h('option', { value: 'current', text: 'Posizione attuale' }));
-      for (const p of state.places) {
-        const opt = h('option', { value: 'place:' + p.id, text: p.name });
-        if (w.start.type === 'place' && w.start.placeId === p.id) opt.selected = true;
-        startSelect.appendChild(opt);
-      }
-      if (w.start.type === 'current') startSelect.value = 'current';
-      else if (w.start.type === 'none') startSelect.value = 'none';
-
-      const modeSelect = h('select', { id: 'itMode' });
-      for (const [v, t] of [['driving', 'Auto'], ['walking', 'A piedi'], ['transit', 'Mezzi'], ['bicycling', 'Bici']]) {
-        const opt = h('option', { value: v, text: t });
-        if (v === mode) opt.selected = true;
-        modeSelect.appendChild(opt);
-      }
-
-      const body = h('div', {},
-        h('div', { class: 'field' }, h('label', { text: 'Nome' }), h('input', { id: 'itName', type: 'text', maxlength: 80, value: w.name })),
-        h('div', { class: 'field' }, h('label', { text: 'Data (facoltativa)' }), h('input', { id: 'itDate', type: 'date', value: w.date || '' })),
-        h('div', { class: 'field' }, h('label', { text: 'Punto di partenza' }), startSelect),
-        h('div', { class: 'field' }, h('label', { text: 'Mezzo' }), modeSelect),
-        h('p', { id: 'itDistance', text: 'Distanza totale (in linea d\'aria): ' + itineraryDistanceKm(w).toFixed(1) + ' km' }),
-        h('button', { type: 'button', class: 'btn soft', onclick: () => { optimizeItinerary(w); rebuild(); } }, 'Ottimizza ordine'),
-        listEl,
-        h('button', { type: 'button', class: 'btn soft', onclick: () => openGoogleMapsItinerary(w, (document.getElementById('itMode') || {}).value || 'driving') }, 'Apri in Google Maps'),
-        h('button', { type: 'button', class: 'btn soft', onclick: () => markItineraryVisited(w.placeIds) }, 'Segna come visitati')
-      );
-
-      showModal({
-        title: 'Itinerario',
-        body,
-        actions: [
-          { label: 'Annulla', kind: 'ghost' },
-          {
-            label: 'Salva',
-            kind: 'primary',
-            onClick: () => {
-              w.name = (document.getElementById('itName') || {}).value || w.name || 'Itinerario';
-              w.date = (document.getElementById('itDate') || {}).value || '';
-              const v = (document.getElementById('itStart') || {}).value || 'none';
-              if (v === 'none') w.start = { type: 'none' };
-              else if (v === 'current') w.start = { type: 'current' };
-              else w.start = { type: 'place', placeId: v.slice(6) };
-              const idx = state.itineraries.findIndex((i) => i.id === w.id);
-              if (idx >= 0) state.itineraries[idx] = w;
-              else state.itineraries.push(w);
-              saveItineraries();
-              showToast('Itinerario salvato', { tone: 'success' });
-              return true;
-            },
-          },
-        ],
-      });
-    }
-    rebuild();
-  }
-
   function bindUI() {
     $('btnMenu').addEventListener('click', () => openDrawer());
     $('btnSearchTop').addEventListener('click', () => openDrawer({ focusSearch: true }));
-    $('btnToggleView').addEventListener('click', () => {
-      state.viewMode = state.viewMode === 'map' ? 'list' : 'map';
-      if (state.viewMode === 'list') openDrawer();
-      else requestCloseOverlay('drawer');
-    });
-    $('btnClearFilters').addEventListener('click', clearAllFilters);
-
-    document.querySelectorAll('.distance-filters .filter-chip').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const km = Number(btn.getAttribute('data-km'));
-        if (state.distance === km) {
-          state.distance = null;
-          updateDistanceButtons();
-          renderActiveFilters();
-          renderList();
-          return;
-        }
-        if (!state.currentPosition) {
-          const pos = await locateUser({ quiet: true });
-          if (!pos) {
-            showToast('Posizione non disponibile: impossibile filtrare per distanza', { tone: 'error' });
-            return;
-          }
-        }
-        state.distance = km;
-        updateDistanceButtons();
-        renderActiveFilters();
-        renderList();
-      });
-    });
-
-    $('listSelect').addEventListener('change', (event) => {
-      state.activeList = event.target.value || 'all';
-      renderListSelect();
-      renderChips();
-      renderList();
-    });
-    $('btnNewList').addEventListener('click', () => {
-      const name = window.prompt('Nome della nuova lista:');
-      if (!name || !name.trim()) return;
-      const list = { id: 'list-' + uid(), name: name.trim().slice(0, 60) };
-      state.lists.push(list);
-      if (!saveLists()) {
-        state.lists.pop();
-        showToast('Lista non salvata: spazio esaurito', { tone: 'error' });
-        return;
-      }
-      state.activeList = list.id;
-      renderListSelect();
-      renderList();
-      showToast('Lista creata', { tone: 'success' });
-    });
-    $('btnRenameList').addEventListener('click', () => {
-      if (state.activeList === 'all') return;
-      const list = state.lists.find((l) => l.id === state.activeList);
-      if (!list) return;
-      const name = window.prompt('Nuovo nome della lista:', list.name);
-      if (!name || !name.trim()) return;
-      const previousName = list.name;
-      list.name = name.trim().slice(0, 60);
-      if (!saveLists()) {
-        list.name = previousName;
-        showToast('Rinomina non salvata: spazio esaurito', { tone: 'error' });
-        return;
-      }
-      renderListSelect();
-      renderList();
-    });
-    $('btnDeleteList').addEventListener('click', () => {
-      if (state.activeList === 'all') return;
-      const list = state.lists.find((l) => l.id === state.activeList);
-      if (!list) return;
-      if (list.id === DEFAULT_LIST.id) {
-        showToast('La lista predefinita non può essere eliminata', { tone: 'error' });
-        return;
-      }
-      showModal({
-        title: 'Eliminare la lista?',
-        body: h('p', { text: 'I luoghi presenti solo in questa lista verranno spostati in "I miei luoghi".' }),
-        actions: [
-          { label: 'Annulla', kind: 'ghost' },
-          {
-            label: 'Elimina',
-            kind: 'danger',
-            onClick: () => {
-              const id = list.id;
-              for (const place of state.places) {
-                if (Array.isArray(place.listIds)) {
-                  place.listIds = place.listIds.filter((x) => x !== id);
-                  if (place.listIds.length === 0) place.listIds = [DEFAULT_LIST.id];
-                }
-              }
-              state.lists = state.lists.filter((l) => l.id !== id);
-              state.activeList = 'all';
-              saveLists();
-              savePlaces();
-              renderListSelect();
-              renderChips();
-              renderList();
-              showToast('Lista eliminata');
-            },
-          },
-        ],
-      });
-    });
+    $('btnCloseDrawer').addEventListener('click', () => requestCloseOverlay('drawer'));
     $('btnAdd').addEventListener('click', () => startAddPlaceFromCenter());
     $('btnAddFromDrawer').addEventListener('click', () => {
       closeOverlayThen('drawer', startAddPlaceFromCenter);
     });
-    $('btnFitAll').addEventListener('click', () => {
-      if (!map || state.markers.size === 0) {
-        showToast('Nessun luogo da mostrare', { tone: 'error' });
-        return;
-      }
-      const group = L.featureGroup(Array.from(state.markers.values()));
-      map.fitBounds(group.getBounds().pad(0.2));
-    });
+    $('btnLocate').addEventListener('click', () => locateUser());
     $('btnNearMe').addEventListener('click', () => { void toggleNearMe(); });
     $('scrim').addEventListener('click', () => {
       if (overlays.some((o) => o.kind === 'sheet')) requestCloseOverlay('sheet');
@@ -4371,7 +3684,6 @@
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         renderChips();
-        renderActiveFilters();
         renderList();
       }, 120);
     };
@@ -4386,7 +3698,6 @@
       $('btnClearSearch').hidden = true;
       clearTimeout(searchTimer);
       renderChips();
-      renderActiveFilters();
       renderList();
       searchInput.focus();
     });
@@ -4501,7 +3812,6 @@
     });
     $('btnInstall').addEventListener('click', promptInstall);
     $('btnInfo').addEventListener('click', openInfoModal);
-    $('btnItinerary').addEventListener('click', () => openItineraryCreator());
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {

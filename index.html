@@ -17,14 +17,11 @@
   <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./vendor/leaflet-markercluster/MarkerCluster.css">
-  <link rel="stylesheet" href="./vendor/leaflet-markercluster/MarkerCluster.Default.css">
   <link rel="stylesheet" href="./vendor/maplibre/maplibre-gl.css">
   <link rel="stylesheet" href="./styles.css">
   <!-- defer: gli script vengono scaricati in parallelo e eseguiti in ordine,
        senza script inline (la CSP richiede script-src 'self'). -->
   <script src="./vendor/leaflet/leaflet.js" defer></script>
-  <script src="./vendor/leaflet-markercluster/leaflet.markercluster.js" defer></script>
   <script src="./vendor/maplibre/maplibre-gl-csp.js" defer></script>
   <script src="./vendor/maplibre/leaflet-maplibre-gl.js" defer></script>
   <script src="./app.js" defer></script>
@@ -57,12 +54,6 @@
   </svg>
 
   <div id="app">
-    <div id="mapLegend" class="map-legend" aria-label="Legenda marker">
-      <span><i class="legend-dot status-none"></i> Nessuno</span>
-      <span><i class="legend-dot status-todo"></i> Da visitare</span>
-      <span><i class="legend-dot status-done"></i> Visitato</span>
-      <span><i class="legend-star">★</i> Preferito</span>
-    </div>
     <div id="map" role="region" aria-label="Mappa dei luoghi salvati"></div>
 
     <header class="topbar">
@@ -79,9 +70,6 @@
       <button id="btnSearchTop" class="icon-btn" aria-label="Cerca tra i luoghi salvati">
         <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
       </button>
-      <button id="btnToggleView" class="icon-btn" aria-label="Passa alla lista" title="Lista/Mappa">
-        <svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg>
-      </button>
     </header>
 
     <div id="offlineBadge" class="offline-badge" hidden>
@@ -90,9 +78,6 @@
     </div>
 
     <div class="map-fabs">
-      <button id="btnFitAll" class="fab fab-light" aria-label="Mostra tutti i luoghi">
-        <svg class="icon" aria-hidden="true"><use href="#i-compass"/></svg>
-      </button>
       <button id="btnLocate" class="fab fab-light" aria-label="Mostra la mia posizione">
         <svg class="icon" aria-hidden="true"><use href="#i-locate"/></svg>
       </button>
@@ -115,19 +100,6 @@
           </button>
         </div>
 
-        <div class="list-bar" role="group" aria-label="Liste">
-          <select id="listSelect" aria-label="Lista attiva"></select>
-          <button id="btnNewList" class="icon-btn subtle" type="button" aria-label="Nuova lista">
-            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
-          </button>
-          <button id="btnRenameList" class="icon-btn subtle" type="button" aria-label="Rinomina lista">
-            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
-          </button>
-          <button id="btnDeleteList" class="icon-btn subtle" type="button" aria-label="Elimina lista">
-            <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
-          </button>
-        </div>
-
         <div class="searchbox">
           <svg class="icon search-icon" aria-hidden="true"><use href="#i-search"/></svg>
           <input id="searchInput" type="search" placeholder="Cerca un luogo per nome…" autocomplete="off" enterkeyhint="search" aria-label="Cerca un luogo per nome">
@@ -146,15 +118,6 @@
           <button id="filterTodo" class="filter-chip" type="button" aria-pressed="false">Da visitare</button>
           <button id="filterDone" class="filter-chip" type="button" aria-pressed="false">Visitati</button>
         </div>
-
-        <div class="distance-filters" role="group" aria-label="Distanza">
-          <button class="filter-chip" type="button" data-km="1">≤ 1 km</button>
-          <button class="filter-chip" type="button" data-km="5">≤ 5 km</button>
-          <button class="filter-chip" type="button" data-km="20">≤ 20 km</button>
-        </div>
-
-        <div id="activeFilters" class="active-filters" aria-live="polite"></div>
-        <button id="btnClearFilters" class="foot-btn" type="button" hidden>Azzera filtri</button>
 
         <div class="drawer-quick">
           <button id="btnAddFromDrawer" class="quick-add">
@@ -182,10 +145,6 @@
         <button id="btnShare" class="foot-btn" aria-label="Condividi i luoghi">
           <svg class="icon" aria-hidden="true"><use href="#i-share"/></svg>
           <span>Condividi</span>
-        </button>
-        <button id="btnItinerary" class="foot-btn" aria-label="Crea itinerario">
-          <svg class="icon" aria-hidden="true"><use href="#i-compass"/></svg>
-          <span>Itinerario</span>
         </button>
         <button id="btnInstall" class="foot-btn" aria-label="Installa l'app sul telefono">
           <svg class="icon" aria-hidden="true"><use href="#i-install"/></svg>
@@ -256,11 +215,6 @@
               <select id="placeCategory"></select>
               <svg class="icon select-chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
             </div>
-          </div>
-
-          <div class="field">
-            <label>Liste</label>
-            <div id="placeLists" class="list-checks"></div>
           </div>
 
           <div class="field-row">

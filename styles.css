@@ -1708,21 +1708,3 @@ button { cursor: pointer; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
-
-
-/* Liste (raccolte) */
-.list-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.list-bar select { flex: 1; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border, #ddd); background: var(--surface, #fff); color: inherit; font: inherit; }
-.list-checks { display: flex; flex-wrap: wrap; gap: 8px; }
-.list-checks label { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--border, #ddd); border-radius: 999px; font-size: 13px; cursor: pointer; }
-.list-checks input { margin: 0; }
-
-
-/* Legenda marker */
-.map-legend { position: absolute; left: 12px; bottom: 80px; z-index: 500; background: rgba(255,255,255,.92); padding: 6px 10px; border-radius: 10px; font-size: 12px; display: flex; gap: 10px; flex-wrap: wrap; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
-.map-legend span { display: inline-flex; align-items: center; gap: 4px; }
-.legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid #555; }
-.status-none { background: #64748b; }
-.status-todo { background: #f59e0b; }
-.status-done { background: #16a34a; }
-.legend-star { color: #e11d48; }

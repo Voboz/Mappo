@@ -15,7 +15,7 @@
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.6.16';
+const VERSION = 'v1.6.8';
 const SHELL_CACHE = 'mappo-shell-' + VERSION;
 const TILE_CACHE = 'mappo-tiles-' + VERSION;
 const RASTER_CACHE = 'mappo-raster-' + VERSION;
@@ -44,9 +44,6 @@ const APP_SHELL = [
   './manifest.webmanifest',
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
-  './vendor/leaflet-markercluster/leaflet.markercluster.js',
-  './vendor/leaflet-markercluster/MarkerCluster.css',
-  './vendor/leaflet-markercluster/MarkerCluster.Default.css',
   './vendor/leaflet/images/marker-icon.png',
   './vendor/leaflet/images/marker-icon-2x.png',
   './vendor/leaflet/images/marker-shadow.png',
@@ -231,13 +228,6 @@ async function networkOnly(request) {
   try {
     return await fetch(request);
   } catch (_) {
-    // Le navigazioni con parametri (scorciatoie del manifest, share target)
-    // devono comunque aprire l'app offline.
-    if (request.mode === 'navigate') {
-      const cache = await caches.open(SHELL_CACHE);
-      const shell = (await cache.match('./index.html')) || (await cache.match('./'));
-      if (shell) return shell;
-    }
     return new Response('', { status: 504, statusText: 'Offline' });
   }
 }
