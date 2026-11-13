@@ -52,6 +52,10 @@
   const NOMINATIM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
   const NOMINATIM_SEARCH = 'https://nominatim.openstreetmap.org/search';
   const ITALY_CENTER = [42.5, 12.5];
+  // Distanza (in pixel) sotto la quale due pin vengono riuniti in un cluster.
+  // Aumentando lo zoom i pin si allontanano sullo schermo e i cluster si
+  // separano in automatico.
+  const CLUSTER_RADIUS = 60;
 
   const GEO_OPTIONS = { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 };
   const GEOCODE_INTERVAL = 1100; // Nominatim: max 1 richiesta al secondo
@@ -91,6 +95,9 @@
   let map = null;
   let positionMarker = null;
   let accuracyCircle = null;
+  let clusterMarkers = [];
+  let glLayer = null;
+  let glMapReady = false;
   let viewSaveTimer = null;
   let flyToken = 0;
   let geocodeSeq = 0;
@@ -418,18 +425,36 @@
     // restare comunque usabile.
     if (typeof L.maplibreGL !== 'function') {
       showToast('Mappa non disponibile: i file di MapLibre non sono stati caricati', { tone: 'error', duration: 10000 });
+      showMapUnavailable();
     } else {
       try {
-        L.maplibreGL({
+        glLayer = L.maplibreGL({
           style: OPENFREEMAP_STYLE,
           attributionControl: { customAttribution: OPENFREEMAP_ATTR },
           // Leaflet usa worldCopyJump: MapLibre deve mostrare un solo mondo,
           // altrimenti marker e mappa si disallineano oltre l'antimeridiano.
           renderWorldCopies: false,
         }).addTo(map);
+        // La mappa vettoriale carica stile, sprite e font dalla rete: quando
+        // lo stile non riesce a caricarsi (offline senza cache) va detto
+        // chiaramente, senza però bloccare la vista lista. Gli errori delle
+        // singole tessere hanno un sourceId e indicano solo zone non ancora
+        // scaricate: non vengono considerati.
+        const glMap = glLayer && typeof glLayer.getMaplibreMap === 'function' ? glLayer.getMaplibreMap() : null;
+        if (glMap) {
+          glMap.on('error', (e) => {
+            if (!e || e.sourceId || glMapReady) return;
+            showMapUnavailable();
+          });
+          glMap.on('load', () => {
+            glMapReady = true;
+            hideMapUnavailable();
+          });
+        }
       } catch (err) {
         console.error('[map] layer GL non inizializzato', err);
         showToast('Mappa non disponibile', { tone: 'error', duration: 10000 });
+        showMapUnavailable();
       }
     }
 
@@ -444,6 +469,10 @@
         saveSettings();
       }, 500);
     });
+
+    // I cluster dipendono dallo zoom: a ogni cambio di zoom si ricalcolano,
+    // così i luoghi raggruppati si separano man mano che ci si avvicina.
+    map.on('zoomend', () => renderMarkers());
 
     bindMapGestures();
   }
@@ -505,33 +534,140 @@
     });
   }
 
-  function renderMarkers() {
+  function makeClusterIcon(count) {
+    const html = '<div class="cluster-wrap"><span class="cluster-badge">' + count + '</span></div>';
+    return L.divIcon({
+      className: 'cluster-marker',
+      html,
+      iconSize: [46, 46],
+      iconAnchor: [23, 23],
+    });
+  }
+
+  function clearMarkers() {
     for (const marker of state.markers.values()) marker.remove();
     state.markers.clear();
+    for (const marker of clusterMarkers) marker.remove();
+    clusterMarkers = [];
+  }
+
+  // Raggruppa i luoghi in una griglia di celle larghe CLUSTER_RADIUS pixel:
+  // quelli che cadono nella stessa cella diventano un unico cluster con il
+  // numero di luoghi riuniti. La griglia si ricalcola a ogni zoom.
+  function computeClusters(places) {
+    const clusters = [];
+    const grid = new Map();
+    for (const place of places) {
+      const point = map.latLngToContainerPoint([place.lat, place.lng]);
+      const key = Math.floor(point.x / CLUSTER_RADIUS) + ':' + Math.floor(point.y / CLUSTER_RADIUS);
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      bucket.push(place);
+    }
+    for (const bucket of grid.values()) {
+      let lat = 0;
+      let lng = 0;
+      for (const place of bucket) {
+        lat += place.lat;
+        lng += place.lng;
+      }
+      const count = bucket.length;
+      clusters.push({ lat: lat / count, lng: lng / count, count, places: bucket });
+    }
+    return clusters;
+  }
+
+  function renderMarkers() {
+    clearMarkers();
     // Senza mappa non ci sono marker da mostrare, ma l'app resta viva.
     if (!map) return;
 
-    for (const place of state.places) {
-      const marker = L.marker([place.lat, place.lng], {
-        icon: makeMarkerIcon(place),
-        title: place.name,
-        alt: place.name,
-        keyboard: true,
-        riseOnHover: true,
-      });
-      marker.bindPopup(() => buildPopup(place.id), {
-        maxWidth: 320,
-        minWidth: 240,
-        autoPanPaddingTopLeft: L.point(16, 86),
-        autoPanPaddingBottomRight: L.point(16, 24),
-        className: 'place-popup',
-      });
-      marker.on('click', () => highlightMarker(place.id));
-      marker.on('popupclose', () => highlightMarker(null));
-      marker.addTo(map);
-      state.markers.set(place.id, marker);
+    const clusters = computeClusters(getFilteredPlaces());
+    for (const cluster of clusters) {
+      if (cluster.count === 1) {
+        const place = cluster.places[0];
+        const marker = L.marker([place.lat, place.lng], {
+          icon: makeMarkerIcon(place),
+          title: place.name,
+          alt: place.name,
+          keyboard: true,
+          riseOnHover: true,
+        });
+        marker.on('click', () => openPlaceSheet(place.id));
+        marker.addTo(map);
+        state.markers.set(place.id, marker);
+      } else {
+        const marker = L.marker([cluster.lat, cluster.lng], {
+          icon: makeClusterIcon(cluster.count),
+          keyboard: true,
+          title: cluster.count + ' luoghi',
+        });
+        marker.on('click', () => expandCluster(cluster));
+        marker.addTo(map);
+        clusterMarkers.push(marker);
+      }
     }
-    applyMarkerFilter();
+  }
+
+  function expandCluster(cluster) {
+    if (!map || !cluster || cluster.count <= 1) return;
+    // A zoom massimo i punti coincidenti non possono più separarsi: mostro
+    // un elenco per scegliere il singolo luogo.
+    if (map.getZoom() >= map.getMaxZoom() - 0.5) {
+      openClusterPicker(cluster.places);
+      return;
+    }
+    const bounds = L.latLngBounds(cluster.places.map((p) => [p.lat, p.lng]));
+    const ne = bounds.getNorthEast();
+    const sw = bounds.getSouthWest();
+    if (bounds.isValid() && (ne.lat !== sw.lat || ne.lng !== sw.lng)) {
+      // Un padding fisso (non proporzionale) lascia spazio ai pin sul bordo
+      // ma permette di avvicinarsi davvero: i cluster più stretti si
+      // separano solo a zoom alto.
+      map.flyToBounds(bounds, {
+        paddingTopLeft: L.point(56, 56),
+        paddingBottomRight: L.point(56, 56),
+        maxZoom: map.getMaxZoom(),
+        duration: 0.6,
+      });
+    } else {
+      openClusterPicker(cluster.places);
+    }
+  }
+
+  function openClusterPicker(places) {
+    const sorted = [...places].sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base', numeric: true }));
+    const body = h('div', {},
+      h('ul', { class: 'cluster-picker' },
+        sorted.map((place) => {
+          const cat = getCategory(place.categoryId);
+          const distance = state.currentPosition
+            ? formatDistance(haversine(state.currentPosition.lat, state.currentPosition.lng, place.lat, place.lng))
+            : '';
+          return h('li', {},
+            h('button', {
+              type: 'button',
+              class: 'cluster-pick',
+              onclick: () => {
+                closeOverlayThen('modal', () => openPlaceSheet(place.id));
+              },
+            },
+              h('span', { class: 'place-icon', style: { '--c': cat.color }, text: cat.icon }),
+              h('span', { class: 'cluster-pick-name', text: place.name }),
+              distance ? h('span', { class: 'place-dist', text: distance }) : null
+            )
+          );
+        })
+      )
+    );
+    showModal({
+      title: sorted.length + (sorted.length === 1 ? ' luogo vicino' : ' luoghi vicini'),
+      body,
+      actions: [{ label: 'Chiudi', kind: 'ghost' }],
+    });
   }
 
   function highlightMarker(id) {
@@ -542,68 +678,105 @@
     }
   }
 
-  function applyMarkerFilter() {
-    const visible = new Set(getFilteredPlaces().map((p) => p.id));
-    for (const [id, marker] of state.markers) {
-      const el = marker.getElement();
-      if (!el) continue;
-      const show = visible.has(id);
-      el.classList.toggle('is-hidden', !show);
-      if (show) {
-        el.setAttribute('tabindex', '0');
-        el.removeAttribute('aria-hidden');
-      } else {
-        marker.closePopup();
-        el.setAttribute('tabindex', '-1');
-        el.setAttribute('aria-hidden', 'true');
-      }
-    }
+  /* ------------------------ Scheda rapida luogo ----------------------- */
+
+  function showPlaceSheet() {
+    const el = $('placeSheet');
+    el.inert = false;
+    el.setAttribute('aria-hidden', 'false');
+    el.classList.add('open');
+    updateScrim();
   }
 
-  /* --------------------------- Popup luogo --------------------------- */
+  function hidePlaceSheet() {
+    const el = $('placeSheet');
+    el.classList.remove('open');
+    el.inert = true;
+    el.setAttribute('aria-hidden', 'true');
+    updateScrim();
+  }
 
-  function buildPopup(placeId) {
-    const place = getPlace(placeId);
-    if (!place) return h('div', { class: 'popup-card', text: 'Luogo non disponibile' });
+  function openPlaceSheet(id) {
+    const place = getPlace(id);
+    if (!place) return;
+    if (map) map.closePopup();
+    renderPlaceSheet(place);
+    if (!overlays.some((o) => o.kind === 'place')) {
+      openOverlay('place', hidePlaceSheet);
+    }
+    showPlaceSheet();
+    highlightMarker(id);
+  }
+
+  function closePlaceSheet() {
+    requestCloseOverlay('place');
+  }
+
+  function renderPlaceSheet(place) {
     const cat = getCategory(place.categoryId);
+    $('placeSheetEyebrow').textContent = cat.name;
+    $('placeSheetTitle').textContent = place.name;
 
-    const head = h('div', { class: 'popup-head' },
-      h('span', { class: 'popup-icon', style: { '--c': cat.color }, text: cat.icon }),
-      h('div', {},
-        h('h3', { class: 'popup-title', text: place.name }),
-        h('span', { class: 'popup-cat', style: { '--c': cat.color }, text: cat.name })
-      )
+    const body = $('placeSheetBody');
+    body.textContent = '';
+
+    const metaParts = [];
+    if (state.currentPosition) {
+      const meters = haversine(state.currentPosition.lat, state.currentPosition.lng, place.lat, place.lng);
+      metaParts.push(formatDistance(meters));
+    }
+    if (place.address) metaParts.push(place.address);
+    if (metaParts.length) {
+      body.appendChild(h('p', { class: 'place-sheet-meta' },
+        svgIcon(state.currentPosition ? 'i-locate' : 'i-pin', 'icon meta-icon'),
+        h('span', { text: metaParts.join(' · ') })
+      ));
+    }
+
+    if (place.note) {
+      body.appendChild(h('div', { class: 'place-sheet-note', text: place.note }));
+    }
+
+    body.appendChild(h('button', {
+      type: 'button',
+      class: 'btn primary wide',
+      onclick: () => openNavigation('gmaps', place),
+    }, svgIcon('i-navigate'), h('span', { text: 'Naviga' })));
+
+    body.appendChild(h('div', { class: 'place-sheet-row' },
+      h('button', {
+        type: 'button', class: 'btn soft', onclick: () => openNavigation('waze', place),
+      }, svgIcon('i-map'), h('span', { text: 'Waze' })),
+      h('button', {
+        type: 'button', class: 'btn soft', onclick: () => closeOverlayThen('place', () => startEditPlace(place)),
+      }, svgIcon('i-edit'), h('span', { text: 'Modifica' })),
+      h('button', {
+        type: 'button', class: 'btn soft', onclick: () => sharePlace(place),
+      }, svgIcon('i-share'), h('span', { text: 'Condividi' }))
+    ));
+
+    const fav = h('button', {
+      type: 'button',
+      class: 'fav-toggle' + (place.favorite ? ' is-active' : ''),
+      'aria-pressed': String(Boolean(place.favorite)),
+      'aria-label': place.favorite ? 'Rimuovi ' + place.name + ' dai preferiti' : 'Segna ' + place.name + ' come preferito',
+      onclick: () => {
+        toggleFavorite(place);
+        renderPlaceSheet(place);
+      },
+    }, svgIcon('i-star'));
+
+    const statusSelect = createStatusSelect(
+      place.status,
+      (value) => {
+        setPlaceStatus(place, value);
+        renderPlaceSheet(place);
+      },
+      'Stato di ' + place.name,
+      'place-sheet-status'
     );
 
-    const card = h('div', { class: 'popup-card' }, head);
-
-    if (place.address) {
-      card.appendChild(h('p', { class: 'popup-address' }, svgIcon('i-pin'), h('span', { text: place.address })));
-    }
-    if (place.note) {
-      card.appendChild(h('div', { class: 'popup-note', text: place.note }));
-    }
-
-    const navBtn = (label, icon, onClick) => h('button', {
-      type: 'button', class: 'btn soft', onclick: onClick,
-    }, svgIcon(icon), h('span', { text: label }));
-
-    card.appendChild(h('div', { class: 'popup-nav' },
-      navBtn('Waze', 'i-navigate', () => openNavigation('waze', place)),
-      navBtn('Google Maps', 'i-map', () => openNavigation('gmaps', place))
-    ));
-
-    const tool = (label, icon, onClick, cls) => h('button', {
-      type: 'button', class: cls || '', onclick: onClick, 'aria-label': label,
-    }, svgIcon(icon), h('span', { text: label }));
-
-    card.appendChild(h('div', { class: 'popup-tools' },
-      tool('Modifica', 'i-edit', () => startEditPlace(place)),
-      tool('Condividi', 'i-share', () => sharePlace(place)),
-      tool('Elimina', 'i-trash', () => confirmDelete(place), 'danger')
-    ));
-
-    return card;
+    body.appendChild(h('div', { class: 'place-sheet-toggle-row' }, fav, statusSelect));
   }
 
   function openNavigation(kind, place) {
@@ -796,7 +969,7 @@
       $('topbarSub').textContent = total === 1 ? '1 luogo salvato' : total + ' luoghi salvati';
     }
 
-    applyMarkerFilter();
+    renderMarkers();
   }
 
   function createStatusSelect(value, onChange, ariaLabel, cls = '') {
@@ -904,7 +1077,6 @@
   }
 
   function renderAll() {
-    renderMarkers();
     renderChips();
     renderFilters();
     renderNearMe();
@@ -925,13 +1097,15 @@
       el.classList.toggle('is-selected', el.dataset.id === id);
     });
     highlightMarker(id);
-    if (!map) return;
+    if (!map) {
+      openPlaceSheet(id);
+      return;
+    }
     const token = ++flyToken;
     map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
     setTimeout(() => {
       if (token !== flyToken) return;
-      const marker = state.markers.get(id);
-      if (marker) marker.openPopup();
+      openPlaceSheet(id);
     }, 740);
   }
 
@@ -1010,19 +1184,22 @@
     const top = overlays.length ? overlays[overlays.length - 1].kind : null;
     const drawer = $('drawer');
     const sheet = $('sheet');
+    const placeSheet = $('placeSheet');
     const drawerOpen = drawer.classList.contains('open');
     const sheetOpen = sheet.classList.contains('open');
+    const placeOpen = placeSheet.classList.contains('open');
 
     drawer.inert = !(drawerOpen && top === 'drawer');
     sheet.inert = !(sheetOpen && top === 'sheet');
+    placeSheet.inert = !(placeOpen && top === 'place');
 
     const picking = $('app').classList.contains('picking');
     const blockBackground = top !== null && !picking;
-    for (const el of [$('map'), $('offlineBadge'), document.querySelector('.topbar'), document.querySelector('.map-fabs')]) {
+    for (const el of [$('map'), $('offlineBadge'), $('mapBanner'), document.querySelector('.topbar'), document.querySelector('.map-fabs')]) {
       if (el) el.inert = blockBackground;
     }
 
-    $('scrim').classList.toggle('show', drawerOpen || sheetOpen);
+    $('scrim').classList.toggle('show', drawerOpen || sheetOpen || placeOpen);
   }
 
   function focusIfVisible(el) {
@@ -1400,6 +1577,21 @@
     }
   }
 
+  function showAllPlaces() {
+    if (!map) return;
+    const places = getFilteredPlaces();
+    if (places.length === 0) {
+      showToast('Nessun luogo da mostrare', { tone: 'error' });
+      return;
+    }
+    if (places.length === 1) {
+      map.flyTo([places[0].lat, places[0].lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
+      return;
+    }
+    const bounds = L.latLngBounds(places.map((p) => [p.lat, p.lng]));
+    map.flyToBounds(bounds.pad(0.15), { maxZoom: 16, duration: 0.8 });
+  }
+
   async function toggleNearMe() {
     if (state.nearMe) {
       state.nearMe = false;
@@ -1522,8 +1714,7 @@
     if (map) map.flyTo([place.lat, place.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
     setTimeout(() => {
       if (token !== flyToken) return;
-      const marker = state.markers.get(place.id);
-      if (marker) marker.openPopup();
+      openPlaceSheet(place.id);
     }, 740);
 
     showToast(wasEditing ? 'Luogo aggiornato' : 'Luogo salvato', { tone: 'success' });
@@ -3387,7 +3578,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.8'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.7.0'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3556,9 +3747,27 @@
 
   /* --------------------------- Connettività -------------------------- */
 
+  function showMapUnavailable() {
+    $('mapBanner').hidden = false;
+  }
+
+  function hideMapUnavailable() {
+    $('mapBanner').hidden = true;
+  }
+
   function setupConnectivity() {
     const update = () => { $('offlineBadge').hidden = navigator.onLine; };
-    window.addEventListener('online', () => { update(); showToast('Connessione ripristinata', { tone: 'success' }); });
+    window.addEventListener('online', () => {
+      update();
+      showToast('Connessione ripristinata', { tone: 'success' });
+      // Se lo stile della mappa non era riuscito a caricarsi offline, si
+      // riprova ora che la rete è tornata.
+      if (!glMapReady && glLayer && typeof glLayer.getMaplibreMap === 'function') {
+        try {
+          glLayer.getMaplibreMap().setStyle(OPENFREEMAP_STYLE);
+        } catch (_) { /* noop */ }
+      }
+    });
     window.addEventListener('offline', update);
     update();
   }
@@ -3670,9 +3879,11 @@
       closeOverlayThen('drawer', startAddPlaceFromCenter);
     });
     $('btnLocate').addEventListener('click', () => locateUser());
+    $('btnShowAll').addEventListener('click', () => showAllPlaces());
     $('btnNearMe').addEventListener('click', () => { void toggleNearMe(); });
     $('scrim').addEventListener('click', () => {
-      if (overlays.some((o) => o.kind === 'sheet')) requestCloseOverlay('sheet');
+      if (overlays.some((o) => o.kind === 'place')) requestCloseOverlay('place');
+      else if (overlays.some((o) => o.kind === 'sheet')) requestCloseOverlay('sheet');
       else requestCloseOverlay('drawer');
     });
 
@@ -3708,6 +3919,8 @@
 
     $('btnCloseSheet').addEventListener('click', () => closeSheet());
     $('btnCancelSheet').addEventListener('click', () => closeSheet());
+    $('btnClosePlaceSheet').addEventListener('click', () => closePlaceSheet());
+    $('btnMapBannerClose').addEventListener('click', () => hideMapUnavailable());
     $('btnFavorite').addEventListener('click', () => setFavoriteUI(!isFavoriteSelected()));
     $('placeForm').addEventListener('submit', submitForm);
     $('placeName').addEventListener('input', () => { if ($('placeName').value.trim()) $('nameError').hidden = true; });
@@ -3817,6 +4030,7 @@
       if (event.key === 'Escape') {
         if (!$('modal').hidden) { requestCloseOverlay('modal'); return; }
         if (!$('pickBar').hidden) { exitPickMode(); return; }
+        if ($('placeSheet').classList.contains('open')) { closePlaceSheet(); return; }
         if ($('sheet').classList.contains('open')) { closeSheet(); return; }
         if ($('drawer').classList.contains('open')) requestCloseOverlay('drawer');
         return;

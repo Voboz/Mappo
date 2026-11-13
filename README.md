@@ -1,7 +1,7 @@
 # Mappo
 
 [![Licenza: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licenza-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENCE)
-[![Versione](https://img.shields.io/badge/versione-1.6.8-teal.svg)](sw.js)
+[![Versione](https://img.shields.io/badge/versione-1.7.0-teal.svg)](sw.js)
 [![PWA](https://img.shields.io/badge/PWA-installabile-green.svg)](manifest.webmanifest)
 
 Web App installabile (PWA) per salvare i tuoi posti preferiti, vederli sulla mappa e ritrovarli in un attimo. Pensata per il telefono, funziona anche offline.
@@ -15,7 +15,7 @@ Web App installabile (PWA) per salvare i tuoi posti preferiti, vederli sulla map
 ## Cosa sa fare
 
 - **Salva i luoghi** con nome, categoria, nota, preferito, stato e posizione (GPS, mappa o link Google Maps).
-- **Mappa OpenFreeMap** con un pin colorato e icona per ogni categoria.
+- **Mappa OpenFreeMap** con un pin colorato e icona per ogni categoria; i luoghi vicini si raggruppano in un unico segnaposto con il numero e si separano ingrandendo la mappa.
 - **Menu laterale** con tutti i luoghi, filtri per categoria, preferiti, da visitare e visitati, con conteggi.
 - **Vicino a me**: chiede la posizione, mostra la distanza di ogni luogo e ordina dal più vicino; un secondo tocco ripristina l'ordine alfabetico.
 - **Ricerca per nome** (cerca anche in note, indirizzo e categoria) con evidenziazione del risultato.
@@ -190,4 +190,4 @@ Dopo aver modificato i file e ripubblicato, cambia `VERSION` in `sw.js` (es. da 
 
 ---
 
-Versione 1.6.8 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Nominatim/OpenStreetMap.
+Versione 1.7.0 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Nominatim/OpenStreetMap.
