@@ -15,7 +15,7 @@
    attesa finché la pagina invia SKIP_WAITING (pulsante "Ricarica").
    ============================================================ */
 
-const VERSION = 'v1.6.2';
+const VERSION = 'v1.6.6';
 const SHELL_CACHE = 'mappo-shell-' + VERSION;
 const TILE_CACHE = 'mappo-tiles-' + VERSION;
 const RASTER_CACHE = 'mappo-raster-' + VERSION;
@@ -200,16 +200,22 @@ async function networkFirst(request, timeout = NETWORK_TIMEOUT) {
       if (!skipCache) cache.put(request, response.clone());
       return response;
     }
-    const cached = (await cache.match(request))
-      || (await cache.match('./index.html'))
-      || (await cache.match('./'));
+    const cached = await cache.match(request);
     if (cached) return cached;
+    // Il fallback alla shell va offerto solo alle navigazioni vere: per
+    // script/CSS/manifest non ha senso restituire index.html.
+    if (request.mode === 'navigate') {
+      const shell = (await cache.match('./index.html')) || (await cache.match('./'));
+      if (shell) return shell;
+    }
     return response;
   } catch (_) {
-    const cached = (await cache.match(request))
-      || (await cache.match('./index.html'))
-      || (await cache.match('./'));
+    const cached = await cache.match(request);
     if (cached) return cached;
+    if (request.mode === 'navigate') {
+      const shell = (await cache.match('./index.html')) || (await cache.match('./'));
+      if (shell) return shell;
+    }
     return new Response(
       '<!doctype html><meta charset="utf-8"><title>Offline</title><body style="font-family:sans-serif;padding:24px">Sei offline e la pagina non è in cache. Riconnettiti e riprova.</body>',
       { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }

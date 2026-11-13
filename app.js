@@ -60,6 +60,9 @@
   // Tetto sul numero di voci: un file valido ma enorme (elenco Takeout)
   // non deve bloccare la scheda durante l'anteprima e la deduplica.
   const MAX_IMPORT_PLACES = 5000;
+  // Un link condiviso può dichiarare moltissime categorie: oltre questa
+  // soglia sono ignorate, per non creare stato arbitrario nel browser.
+  const MAX_IMPORT_CATEGORIES = 200;
   // Limite prudente: alcuni client di messaggistica troncano URL più lunghi.
   const MAX_SHARE_URL = 2000;
   const MAX_SHARE_TEXT = 4000;
@@ -185,6 +188,16 @@
   function savePlaces() { return writeJSON(STORAGE.places, state.places); }
   function saveCategories() { return writeJSON(STORAGE.categories, state.categories); }
   function saveSettings() { return writeJSON(STORAGE.settings, state.settings); }
+
+  // Copie di sicurezza create da readJSON() quando un dato è illeggibile.
+  // Vanno rimosse insieme ai dati, altrimenti resterebbero sul dispositivo.
+  function removeCorruptCopies() {
+    for (const key of Object.values(STORAGE)) {
+      try {
+        localStorage.removeItem(key + '.corrupt');
+      } catch (_) { /* storage non disponibile: nulla da fare */ }
+    }
+  }
 
   function fold(text) {
     return String(text || '')
@@ -1566,8 +1579,10 @@
     if (!input) return { error: 'Incolla un link o delle coordinate.' };
     const text = input.trim();
 
-    if (/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(text)) {
-      return { error: 'I link brevi non sono supportati: apri il link, poi copia l\'indirizzo completo.' };
+    if (isShortMapLink(text)) {
+      // Le coordinate non sono nel link: vanno chieste alla pagina di
+      // destinazione. Se ne occupa parseCoordinatesSmart().
+      return { error: 'Link breve da risolvere.', shortLink: true };
     }
 
     const isUrl = /^(https?:\/\/|geo:)/i.test(text);
@@ -1618,10 +1633,157 @@
     }
   }
 
+  /* ----------------- Risoluzione dei link brevi di Google --------------
+     Un link breve (maps.app.goo.gl, goo.gl/maps, g.co/maps) non contiene
+     coordinate: le ha solo la pagina di destinazione. Il browser da solo non
+     può seguirla, perché Google non invia header CORS e un redirect resta
+     comunque opaco. Il link viene quindi fatto seguire dal Worker del
+     progetto (worker/link-resolver.js), che restituisce solo l'URL finale.
+     Il link viene inviato al Worker soltanto quando c'è da risolverlo.
+     ------------------------------------------------------------------- */
+
+  const SHORT_MAP_RE = /^(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+$/i;
+  const SHORT_MAP_IN_TEXT_RE = /(?:https?:\/\/)?(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/maps)\/\S+/i;
+
+  // Endpoint del risolutore: riceve ?url=<link breve> e deve restituire
+  // l'URL finale come JSON {"url":"…"} oppure come testo. Il Worker è in
+  // worker/link-resolver.js (vedi worker/README.md). Se lo cambi, aggiorna
+  // anche connect-src in index.html.
+  const SHORT_LINK_ENDPOINT = 'https://mappo-link.mappo.workers.dev/';
+  const SHORT_LINK_TIMEOUT = 9000;
+  const MAX_IMPORT_SHORT_LINKS = 10;
+
+  function isShortMapLink(value) {
+    return SHORT_MAP_RE.test(String(value || '').trim());
+  }
+
+  // Estrae il primo link breve da un testo ("Guarda qui: https://…").
+  function findShortMapLink(value) {
+    const match = String(value || '').match(SHORT_MAP_IN_TEXT_RE);
+    return match ? match[0].replace(/[.,;:!?)\]}"']+$/, '') : '';
+  }
+
+  // Nome del luogo da un link Google senza coordinate numeriche
+  // (es. https://maps.google.com?q=Piazza+del+Popolo,+Roma).
+  function extractQueryName(text) {
+    const match = String(text || '').match(/[?&](?:q|query|destination|daddr)=([^&#]+)/i);
+    if (!match) return '';
+    try {
+      const value = decodeURIComponent(match[1].replace(/\+/g, ' ')).replace(/\s+/g, ' ').trim();
+      if (!value) return '';
+      // Un valore numerico è già stato gestito da parseCoordinates().
+      if (/^-?\d{1,3}(?:\.\d+)?\s*[,;]\s*-?\d{1,3}(?:\.\d+)?$/.test(value)) return '';
+      return value.slice(0, 120);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // Trasforma l'URL finale in coordinate; se l'URL ha solo l'identificativo
+  // del luogo restituisce almeno il nome, da geocodificare.
+  function parseResolvedUrl(finalUrl) {
+    const url = String(finalUrl || '').trim();
+    if (!/^https?:\/\//i.test(url)) return null;
+    const parsed = parseCoordinates(url);
+    if (!parsed.error) return { lat: parsed.lat, lng: parsed.lng, name: parsed.name || '' };
+    const name = extractPlaceName(url) || extractQueryName(url);
+    return name ? { lat: null, lng: null, name } : null;
+  }
+
+  // Senza endpoint non c'è modo di seguire il redirect: meglio dirlo
+  // chiaramente che contattare servizi pubblici non configurati.
+  async function resolveViaEndpoint(shortUrl) {
+    if (!SHORT_LINK_ENDPOINT) {
+      throw new Error('La risoluzione dei link brevi non è configurata in questa copia dell\'app.');
+    }
+    const joined = SHORT_LINK_ENDPOINT + (SHORT_LINK_ENDPOINT.includes('?') ? '&' : '?')
+      + 'url=' + encodeURIComponent(shortUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SHORT_LINK_TIMEOUT);
+    try {
+      const res = await fetch(joined, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json, text/plain;q=0.9' },
+      });
+      if (!res.ok) return null;
+      const raw = (await res.text()).slice(0, 20000).trim();
+      let finalUrl = raw;
+      try {
+        const data = JSON.parse(raw);
+        finalUrl = String(data.url || data.finalUrl || data.final_url || data.location || '').trim();
+      } catch (_) { /* risposta in testo semplice */ }
+      return parseResolvedUrl(finalUrl);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const shortLinkCache = new Map();
+
+  // Restituisce { lat, lng, name } oppure null. Lancia solo se è impossibile
+  // provarci (offline o endpoint non configurato).
+  function resolveShortMapLink(shortUrl) {
+    const key = String(shortUrl || '').trim();
+    if (!isShortMapLink(key)) return Promise.resolve(null);
+    if (shortLinkCache.has(key)) return shortLinkCache.get(key);
+
+    const task = (async () => {
+      if (!navigator.onLine) {
+        throw new Error('Sei offline: per risolvere un link breve serve la connessione.');
+      }
+      // Il link breve passa solo dal Worker del progetto: nessun fallback
+      // verso servizi pubblici, così non esce dal perimetro previsto.
+      return resolveViaEndpoint(key);
+    })();
+
+    // Se la risoluzione fallisce si toglie dalla cache: un secondo tentativo
+    // (rete tornata disponibile) deve poter riprovare davvero.
+    task.then((found) => {
+      if (!found) shortLinkCache.delete(key);
+    }, () => {
+      shortLinkCache.delete(key);
+    });
+    shortLinkCache.set(key, task);
+    return task;
+  }
+
+  // Come parseCoordinates(), ma risolve anche i link brevi di Google e
+  // accetta i link che contengono solo il nome del luogo (q=Nome).
+  async function parseCoordinatesSmart(input) {
+    const direct = parseCoordinates(input);
+    if (!direct.error) return direct;
+
+    // Il link breve può arrivare anche dentro una frase copiata da una chat.
+    const shortUrl = isShortMapLink(input) ? String(input).trim() : findShortMapLink(input);
+    if (!shortUrl) {
+      const text = String(input || '').trim();
+      const queryName = /google\.[a-z.]+\//i.test(text) ? extractQueryName(text) : '';
+      if (queryName) return { name: queryName };
+      return direct;
+    }
+
+    let found = null;
+    try {
+      found = await resolveShortMapLink(shortUrl);
+    } catch (err) {
+      return { error: err && err.message ? err.message : 'Link breve non risolto.' };
+    }
+    if (!found) {
+      return {
+        error: 'Link breve non risolto. Apri il link e incolla l\'indirizzo completo di Google Maps.',
+      };
+    }
+    if (Number.isFinite(found.lat) && Number.isFinite(found.lng)) {
+      return { lat: found.lat, lng: found.lng, name: found.name || '' };
+    }
+    if (found.name) return { name: found.name };
+    return { error: 'Il link breve non contiene un luogo riconoscibile.' };
+  }
+
   /* --------------------- Condivisione di sistema ---------------------
      Share Target (manifest): riceve title/text/url da un'altra app.
-     I link brevi maps.app.goo.gl non vengono mai seguiti (CORS):
-     in quel caso si usa nome/indirizzo e la geocodifica Nominatim.
+     Se arriva solo un link breve viene risolto; in mancanza si usa
+     nome/indirizzo con la geocodifica Nominatim.
      ------------------------------------------------------------------ */
 
   const SHARE_URL_RE = /(?:https?:\/\/|geo:)[^\s<>"']+/gi;
@@ -1722,6 +1884,26 @@
       }
     }
 
+    // Nessuna coordinata diretta: prova a risolvere un eventuale link breve.
+    if (!coords) {
+      for (const url of urls) {
+        if (!isShortMapLink(url)) continue;
+        showToast('Risolvo il link condiviso…');
+        let resolved = null;
+        try {
+          resolved = await resolveShortMapLink(url);
+        } catch (_) {
+          resolved = null;
+        }
+        if (resolved && Number.isFinite(resolved.lat) && Number.isFinite(resolved.lng)) {
+          coords = { lat: resolved.lat, lng: resolved.lng };
+          nameFromUrl = resolved.name || '';
+          break;
+        }
+        if (resolved && resolved.name && !hints.name) hints.name = resolved.name;
+      }
+    }
+
     if (coords) {
       showToast('Luogo condiviso pronto: controlla e salva', { tone: 'success' });
       setTimeout(() => {
@@ -1763,9 +1945,11 @@
 
   /* ------------------------------ Modale ----------------------------- */
 
-  function showModal({ title, body, actions = [] }) {
+  function showModal({ title, body, actions = [], focusTitle = false }) {
     const modal = $('modal');
     $('modalTitle').textContent = title;
+    const card = modal.querySelector('.modal-card');
+    if (card) card.scrollTop = 0;
     const bodyEl = $('modalBody');
     bodyEl.textContent = '';
     if (typeof body === 'string') bodyEl.textContent = body;
@@ -1791,7 +1975,20 @@
     modal.hidden = false;
     openOverlay('modal', hideModal);
     syncOverlayState();
-    if (firstButton) setTimeout(() => firstButton.focus(), 60);
+    if (focusTitle) {
+      // Un'informativa lunga non deve aprirsi già scorsa in fondo: il focus
+      // va al titolo, che viene anche letto dallo screen reader.
+      const titleEl = $('modalTitle');
+      titleEl.setAttribute('tabindex', '-1');
+      setTimeout(() => {
+        titleEl.focus({ preventScroll: true });
+        // L'ancoraggio dello scroll del browser può spostare la card mentre
+        // cambia il contenuto: si riporta esplicitamente in cima.
+        if (card) card.scrollTop = 0;
+      }, 60);
+    } else if (firstButton) {
+      setTimeout(() => firstButton.focus(), 60);
+    }
   }
 
   function hideModal() {
@@ -2388,7 +2585,9 @@
 
     // Riusa le categorie già presenti (match per nome), altrimenti ricrea
     // quella del link con colore e icona originali.
-    const rawCategories = Array.isArray(data.c) ? data.c : [];
+    // Le categorie dichiarate dal link sono un input non fidato: si leggono
+    // solo le prime e si ignorano quelle oltre il tetto.
+    const rawCategories = (Array.isArray(data.c) ? data.c : []).slice(0, MAX_IMPORT_CATEGORIES);
     const categoryNames = rawCategories.map((raw) => (Array.isArray(raw) ? cleanText(raw[0], 40) : ''));
     const categoryIds = rawCategories.map((raw, i) => {
       const name = categoryNames[i];
@@ -2612,7 +2811,12 @@
     const defaultCategory = idx.category === -1 ? listNameFromFile(filename) : '';
     const places = [];
     const skipped = [];
+    const shortLinks = [];
     for (const row of rows.slice(1)) {
+      if (places.length >= MAX_IMPORT_PLACES) {
+        skipped.push(skippedEntry('', 'oltre il limite di ' + MAX_IMPORT_PLACES + ' luoghi'));
+        break;
+      }
       const value = (index) => (index >= 0 ? String(row[index] == null ? '' : row[index]).trim() : '');
       let name = value(idx.name);
       const address = cleanText(value(idx.address), 300);
@@ -2620,9 +2824,11 @@
       let lat = parseCoordinateValue(value(idx.lat));
       let lng = parseCoordinateValue(value(idx.lng));
       let urlName = '';
+      let shortLink = '';
       if ((lat == null || lng == null) && url) {
         const parsed = parseCoordinates(url);
         if (!parsed.error) { lat = parsed.lat; lng = parsed.lng; urlName = parsed.name || ''; }
+        else if (isShortMapLink(url)) shortLink = url;
       }
       if (!name) name = urlName || address;
       if (!name) { skipped.push(skippedEntry(address || url, 'nome mancante')); continue; }
@@ -2632,7 +2838,7 @@
       }
       if (lat == null || lng == null) { lat = null; lng = null; }
       const notes = [value(idx.note), value(idx.comment)].filter((part, i, all) => part && all.indexOf(part) === i);
-      places.push({
+      const entry = {
         name: cleanText(name, 120),
         lat,
         lng,
@@ -2643,15 +2849,22 @@
         categoryId: '',
         categoryName: cleanText(value(idx.category) || defaultCategory, 40),
         createdAt: Date.now(),
-      });
+      };
+      places.push(entry);
+      if (shortLink) shortLinks.push({ place: entry, url: shortLink });
     }
-    return { format: 'csv', places, categories: [], skipped };
+    return { format: 'csv', places, categories: [], skipped, shortLinks };
   }
 
   function parseGeoJsonImport(data, options = {}) {
     const places = [];
     const skipped = [];
+    const shortLinks = [];
     for (const feature of data.features) {
+      if (places.length >= MAX_IMPORT_PLACES) {
+        skipped.push(skippedEntry('', 'oltre il limite di ' + MAX_IMPORT_PLACES + ' luoghi'));
+        break;
+      }
       const props = feature && feature.properties && typeof feature.properties === 'object' ? feature.properties : {};
       let lat = null;
       let lng = null;
@@ -2665,9 +2878,11 @@
       }
       const url = props.google_maps_url || props.url || props.link || '';
       let urlName = '';
+      let shortLink = '';
       if ((lat == null || lng == null) && url) {
         const parsed = parseCoordinates(String(url));
         if (!parsed.error) { lat = parsed.lat; lng = parsed.lng; urlName = parsed.name || ''; }
+        else if (isShortMapLink(String(url))) shortLink = String(url);
       }
       if (lat != null && lng != null && !validLatLng(lat, lng)) {
         skipped.push(skippedEntry(props.name || props.title || urlName, 'coordinate non valide'));
@@ -2679,7 +2894,7 @@
       if (!name) { skipped.push(skippedEntry(address || url, 'nome mancante')); continue; }
       const hasFavorite = Object.prototype.hasOwnProperty.call(props, 'favorite')
         || Object.prototype.hasOwnProperty.call(props, 'preferito');
-      places.push({
+      const entry = {
         name,
         lat,
         lng,
@@ -2692,9 +2907,11 @@
         categoryId: cleanText(props.categoryId || props.category_id || '', 40),
         categoryName: cleanText(props.category || props.categoria || props.list || props.List || '', 40),
         createdAt: Number(props.createdAt) || Date.now(),
-      });
+      };
+      places.push(entry);
+      if (shortLink) shortLinks.push({ place: entry, url: shortLink });
     }
-    return { format: 'geojson', places, categories: [], skipped };
+    return { format: 'geojson', places, categories: [], skipped, shortLinks };
   }
 
   function parseLegacyBackup(data, rawPlaces) {
@@ -2706,6 +2923,10 @@
     const places = [];
     const skipped = [];
     for (const raw of rawPlaces) {
+      if (places.length >= MAX_IMPORT_PLACES) {
+        skipped.push(skippedEntry('', 'oltre il limite di ' + MAX_IMPORT_PLACES + ' luoghi'));
+        break;
+      }
       const place = sanitizePlace(raw, available);
       if (!place) {
         skipped.push(skippedEntry(raw && raw.name, 'coordinate mancanti o non valide'));
@@ -2752,6 +2973,10 @@
     const places = [];
     const skipped = [];
     for (const placemark of placemarks) {
+      if (places.length >= MAX_IMPORT_PLACES) {
+        skipped.push(skippedEntry('', 'oltre il limite di ' + MAX_IMPORT_PLACES + ' luoghi'));
+        break;
+      }
       const data = {};
       for (const node of placemark.getElementsByTagNameNS('*', 'Data')) {
         const key = headerKey(node.getAttribute('name') || '');
@@ -2840,6 +3065,33 @@
     return h('div', { class: 'import-stat' }, h('strong', { text: String(value) }), h('span', { text: label }));
   }
 
+  // Risolve i link brevi trovati in un file importato: senza risoluzione
+  // resterebbero "da geocodificare" e verrebbero cercati per nome.
+  async function resolveImportShortLinks(payload) {
+    const all = Array.isArray(payload.shortLinks) ? payload.shortLinks : [];
+    payload.shortLinks = [];
+    if (all.length === 0) return;
+
+    const links = all.slice(0, MAX_IMPORT_SHORT_LINKS);
+    showToast(links.length === 1 ? 'Risolvo il link breve del file…' : 'Risolvo i link brevi del file…');
+    await Promise.all(links.map(async (item) => {
+      let found = null;
+      try {
+        found = await resolveShortMapLink(item.url);
+      } catch (_) {
+        return;
+      }
+      if (!found || !Number.isFinite(found.lat) || !Number.isFinite(found.lng)) return;
+      item.place.lat = found.lat;
+      item.place.lng = found.lng;
+      if (found.name && !item.place.name) item.place.name = cleanText(found.name, 120);
+    }));
+
+    if (all.length > links.length) {
+      showToast((all.length - links.length) + ' link brevi oltre il limite di ' + MAX_IMPORT_SHORT_LINKS + ' non sono stati risolti', { tone: 'error', duration: 8000 });
+    }
+  }
+
   function importFile(file) {
     if (!file) return;
     if (importRunning) {
@@ -2851,7 +3103,7 @@
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       let payload;
       try {
         payload = parseImportText(reader.result, file.name);
@@ -2862,6 +3114,14 @@
       if (!payload.places.length && !payload.skipped.length) {
         showToast('Nessun luogo riconosciuto nel file', { tone: 'error' });
         return;
+      }
+      if (Array.isArray(payload.shortLinks) && payload.shortLinks.length > 0) {
+        importRunning = true;
+        try {
+          await resolveImportShortLinks(payload);
+        } finally {
+          importRunning = false;
+        }
       }
       if (payload.places.length > MAX_IMPORT_PLACES) {
         const dropped = payload.places.length - MAX_IMPORT_PLACES;
@@ -3127,7 +3387,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.2'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.6.6'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3147,6 +3407,14 @@
       body,
       actions: [
         {
+          label: 'Privacy',
+          kind: 'ghost',
+          onClick: () => {
+            closeOverlayThen('modal', openPrivacyModal);
+            return false;
+          },
+        },
+        {
           label: 'Cancella tutti',
           kind: 'danger-ghost',
           onClick: () => {
@@ -3160,6 +3428,53 @@
         },
         { label: 'Chiudi', kind: 'primary' },
       ],
+    });
+  }
+
+  // Informativa breve consultabile anche offline. La versione completa è in
+  // PRIVACY.md (link al repository), così il testo non dipende dalla rete.
+  function openPrivacyModal() {
+    const body = h('div', {},
+      h('p', { text: 'Mappo non ha account, non ha un server dell\'autore e non usa cookie, analytics o pubblicità. I luoghi che salvi restano nel browser di questo dispositivo.' }),
+
+      h('h4', { text: 'Cosa resta sul dispositivo' }),
+      h('ul', {},
+        h('li', { text: 'I luoghi: nome, coordinate, indirizzo, nota, categoria, preferito e stato.' }),
+        h('li', { text: 'Le categorie personalizzate e le impostazioni (ultima categoria usata, posizione della mappa).' }),
+        h('li', { text: 'La cache offline dell\'interfaccia e delle zone di mappa già visitate.' })
+      ),
+      h('p', { text: 'Restano finché non li cancelli tu. Non vengono inviati all\'autore né a un server dell\'app.' }),
+
+      h('h4', { text: 'Cosa esce dal dispositivo' }),
+      h('ul', {},
+        h('li', {}, h('strong', { text: 'OpenFreeMap' }), ': richieste delle tessere della mappa (indirizzo IP e zona visualizzata).'),
+        h('li', {}, h('strong', { text: 'Nominatim / OpenStreetMap' }), ': indirizzo, nome del luogo o coordinate, solo quando chiedi di ricavare o cercare un indirizzo.'),
+        h('li', {}, h('strong', { text: 'Worker Mappo (Cloudflare)' }), ': solo il link breve di Google, e solo quando ne incolli uno, lo ricevi tramite Condividi o importi un file che lo contiene.')
+      ),
+      h('p', { text: 'I link completi, le note e i luoghi salvati non vengono mai inviati all\'autore. Alcuni fornitori hanno sede fuori dall\'UE e applicano le proprie garanzie per il trasferimento dei dati.' }),
+
+      h('h4', { text: 'Posizione' }),
+      h('p', { text: 'La posizione viene chiesta solo quando tocchi «Posizione attuale» o «Vicino a me», con il consenso del browser. Le coordinate restano sul dispositivo e vengono salvate solo se salvi il luogo; puoi negare il permesso e scegliere il punto sulla mappa.' }),
+
+      h('h4', { text: 'Condivisione' }),
+      h('p', { text: 'I file e i link che condividi non sono cifrati: chi li riceve può leggerli. Il token del link sta nel frammento (#), quindi non viene inviato al server che ospita l\'app, ma resta visibile nell\'app di messaggistica con cui lo invii. Quando ricevi un luogo da un\'altra app, il testo condiviso arriva nell\'URL di avvio: l\'app lo elabora e ripulisce subito l\'indirizzo, ma può comparire nei log del fornitore di hosting.' }),
+
+      h('h4', { text: 'I tuoi diritti' }),
+      h('p', { text: 'Puoi ottenere una copia dei tuoi dati con «Esporta», correggerli modificando i luoghi e cancellarli con «Cancella tutti» o cancellando i dati del sito dalle impostazioni del browser. Poiché l\'autore non riceve i dati, non c\'è nulla da richiedere a lui: per i servizi terzi valgono le loro informative. Per domande o segnalazioni puoi aprire una issue su GitHub.' }),
+
+      h('p', {}, 'Informativa completa: ', h('a', {
+        href: 'https://github.com/Voboz/Mappo/blob/main/PRIVACY.md',
+        target: '_blank',
+        rel: 'noopener',
+        text: 'PRIVACY.md',
+      }), '. Ultimo aggiornamento: novembre 2026.')
+    );
+
+    showModal({
+      title: 'Privacy',
+      body,
+      actions: [{ label: 'Chiudi', kind: 'primary' }],
+      focusTitle: true,
     });
   }
 
@@ -3179,6 +3494,7 @@
               state.places = previous;
               return false;
             }
+            removeCorruptCopies();
             if (map) map.closePopup();
             renderAll();
             showToast('Tutti i luoghi sono stati cancellati');
@@ -3428,20 +3744,52 @@
       geocodeDraft();
     });
 
-    $('btnParseLink').addEventListener('click', () => {
-      const result = parseCoordinates($('gmapsInput').value);
+    $('btnParseLink').addEventListener('click', async () => {
+      const button = $('btnParseLink');
       const error = $('gmapsError');
-      if (result.error) {
-        error.textContent = result.error;
-        error.hidden = false;
-        return;
-      }
+      const input = $('gmapsInput').value;
       error.hidden = true;
-      setDraftCoords(result.lat, result.lng, '');
-      updateDraftUI();
-      if (result.name && !$('placeName').value.trim()) $('placeName').value = result.name;
-      geocodeDraft();
-      showToast('Coordinate importate', { tone: 'success' });
+      if (button.classList.contains('loading')) return;
+
+      const shortLink = isShortMapLink(input) || Boolean(findShortMapLink(input));
+      if (shortLink) {
+        button.classList.add('loading');
+        showToast('Risolvo il link breve…');
+      }
+      try {
+        const result = await parseCoordinatesSmart(input);
+        if (result.error) {
+          error.textContent = result.error;
+          error.hidden = false;
+          return;
+        }
+        if (Number.isFinite(result.lat) && Number.isFinite(result.lng)) {
+          setDraftCoords(result.lat, result.lng, '');
+          if (result.name && !$('placeName').value.trim()) $('placeName').value = result.name;
+          geocodeDraft();
+          showToast('Coordinate importate', { tone: 'success' });
+          return;
+        }
+        // Link risolto senza coordinate (c'è solo l'identificativo del
+        // luogo): si cerca il nome con Nominatim.
+        if (result.name) {
+          showToast('Cerco "' + result.name + '"…');
+          const found = await forwardGeocode(result.name);
+          if (found) {
+            setDraftCoords(found.lat, found.lng, found.address || '');
+            if (!$('placeName').value.trim()) $('placeName').value = result.name;
+            showToast('Luogo trovato: controlla e salva', { tone: 'success' });
+            return;
+          }
+          error.textContent = 'Riconosciuto "' + result.name + '" ma non trovo la posizione: scegli il punto sulla mappa.';
+          error.hidden = false;
+          return;
+        }
+        error.textContent = 'Il link non contiene coordinate utilizzabili. Scegli il punto sulla mappa.';
+        error.hidden = false;
+      } finally {
+        button.classList.remove('loading');
+      }
     });
 
     $('btnExport').addEventListener('click', () => openExportModal());
@@ -3485,24 +3833,59 @@
 
   /* ------------------------------ Avvio ------------------------------ */
 
-  function handleUrlActions() {
+  // Toglie i parametri indicati dall'URL senza ricaricare la pagina. Serve
+  // per non lasciare titolo, testo e link condivisi nella barra degli
+  // indirizzi, nella cronologia e nei log del browser.
+  function stripUrlParams(names) {
+    try {
+      const url = new URL(window.location.href);
+      let changed = false;
+      for (const name of names) {
+        if (!url.searchParams.has(name)) continue;
+        url.searchParams.delete(name);
+        changed = true;
+      }
+      if (!changed) return;
+      const search = url.searchParams.toString();
+      history.replaceState({}, '', url.pathname + (search ? '?' + search : '') + url.hash);
+    } catch (_) { /* URL non valido: nessuna pulizia possibile */ }
+  }
+
+  let pendingUrlAction = null;
+
+  // Legge (e subito rimuove) i parametri di azione prima che parta la
+  // mappa: così nessuna richiesta di tessere o script porta con sé titolo,
+  // testo o link condivisi.
+  function readUrlActions() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('share') === '1') {
-      void handleShareTarget({
-        title: params.get('title') || '',
-        text: (params.get('text') || '').slice(0, MAX_SHARE_TEXT),
-        url: (params.get('url') || '').slice(0, MAX_SHARE_URL),
-      });
+      pendingUrlAction = {
+        type: 'share',
+        payload: {
+          title: params.get('title') || '',
+          text: (params.get('text') || '').slice(0, MAX_SHARE_TEXT),
+          url: (params.get('url') || '').slice(0, MAX_SHARE_URL),
+        },
+      };
+      stripUrlParams(['share', 'title', 'text', 'url']);
       return;
     }
     const action = params.get('action');
     if (!action) return;
-    try {
-      history.replaceState({}, '', window.location.pathname + window.location.hash);
-    } catch (_) { /* noop */ }
-    if (action === 'add') {
+    pendingUrlAction = { type: action };
+    stripUrlParams(['action']);
+  }
+
+  // Esegue l'azione dopo che interfaccia e mappa sono pronte.
+  function runUrlActions() {
+    const pending = pendingUrlAction;
+    pendingUrlAction = null;
+    if (!pending) return;
+    if (pending.type === 'share') {
+      void handleShareTarget(pending.payload);
+    } else if (pending.type === 'add') {
       setTimeout(() => startAddPlaceFromCenter(), 400);
-    } else if (action === 'search') {
+    } else if (pending.type === 'search') {
       setTimeout(() => openDrawer({ focusSearch: true }), 400);
     }
   }
@@ -3522,6 +3905,9 @@
   }
 
   function init() {
+    // Prima di tutto: i parametri di condivisione non devono restare
+    // nell'URL mentre la mappa carica le sue risorse.
+    readUrlActions();
     loadData();
     // I listener si registrano prima della mappa: se la mappa non parte,
     // l'interfaccia resta comunque utilizzabile.
@@ -3539,7 +3925,7 @@
     setupInstall();
     setupConnectivity();
     registerServiceWorker();
-    handleUrlActions();
+    runUrlActions();
     void handleShareLink();
     maybeShowWelcome();
   }
