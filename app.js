@@ -1290,6 +1290,7 @@
       lat: Number.isFinite(lat) ? lat : center.lat,
       lng: Number.isFinite(lng) ? lng : center.lng,
       address,
+      addressLocked: Boolean(address),
       moved: false,
     };
 
@@ -1315,7 +1316,13 @@
     if (!place) return;
     if (map) map.closePopup();
     state.editingId = place.id;
-    state.draft = { lat: place.lat, lng: place.lng, address: place.address || '', moved: false };
+    state.draft = {
+      lat: place.lat,
+      lng: place.lng,
+      address: place.address || '',
+      addressLocked: true,
+      moved: false,
+    };
     $('placeForm').reset();
     $('nameError').hidden = true;
     $('gmapsError').hidden = true;
@@ -1383,10 +1390,23 @@
     }
     $('coordsValue').textContent = formatCoord(draft.lat) + ', ' + formatCoord(draft.lng);
     $('coordsAddress').textContent = draft.address || 'Posizione pronta';
+    // Il campo indirizzo segue la posizione, senza sovrascrivere ciò che
+    // l'utente sta scrivendo in quel momento.
+    if (document.activeElement !== $('placeAddress')) {
+      $('placeAddress').value = draft.address || '';
+    }
   }
 
   function setDraftCoords(lat, lng, address = '') {
-    state.draft = { lat, lng, address, moved: true };
+    state.draft = {
+      lat,
+      lng,
+      address,
+      // Un indirizzo esplicito (link Google o condivisione) è più preciso
+      // del reverse geocoding e non deve essere sostituito da OSM.
+      addressLocked: Boolean(address),
+      moved: true,
+    };
     updateDraftUI();
     geocodeSeq++;
   }
@@ -1397,6 +1417,19 @@
     const text = cleanText(value, 120);
     const comma = text.indexOf(',');
     return comma > 0 ? cleanText(text.slice(0, comma), 120) : text;
+  }
+
+  // L'indirizzo accodato da Google dopo il nome ("Nome, Via …, CAP Città").
+  // Va conservato: il reverse geocoding di OSM può indicare il civico vicino
+  // sbagliato (es. 18 al posto di 24), mentre questo testo viene da Google.
+  function addressFromLinkName(value) {
+    const text = cleanText(value, 300);
+    const comma = text.indexOf(',');
+    if (comma < 0) return '';
+    const rest = cleanText(text.slice(comma + 1), 300);
+    // Senza un numero (civico o CAP) non è un indirizzo, ma un altro pezzo
+    // del nome: "Bar, Pasticceria" non deve diventare un indirizzo.
+    return /\d/.test(rest) ? rest : '';
   }
 
   // Il nome ricavato dal link va compilato subito, anche quando la posizione
@@ -1539,11 +1572,13 @@
 
   async function geocodeDraft() {
     const draft = state.draft;
-    if (!draft) return;
+    if (!draft || draft.addressLocked) return;
     const seq = ++geocodeSeq;
     $('coordsAddress').textContent = 'Recupero indirizzo…';
     const address = await reverseGeocode(draft.lat, draft.lng);
-    if (seq !== geocodeSeq || !state.draft) return;
+    // Nel frattempo l'utente può aver scritto l'indirizzo a mano: in quel
+    // caso il risultato del geocoding non deve sostituirlo.
+    if (seq !== geocodeSeq || !state.draft || state.draft.addressLocked) return;
     if (address) state.draft.address = address;
     updateDraftUI();
   }
@@ -1709,6 +1744,8 @@
     const wasEditing = Boolean(state.editingId);
     const categoryId = $('placeCategory').value || 'altro';
     const note = $('placeNote').value.trim();
+    const address = $('placeAddress').value.trim();
+    state.draft.address = address;
     const favorite = isFavoriteSelected();
     const statusValue = $('placeStatus').value;
     const status = PLACE_STATUSES.includes(statusValue) ? statusValue : null;
@@ -1739,7 +1776,7 @@
       place.status = status;
       place.lat = state.draft.lat;
       place.lng = state.draft.lng;
-      place.address = state.draft.address || (state.draft.moved ? '' : place.address);
+      place.address = address || (state.draft.moved ? '' : place.address);
       place.updatedAt = Date.now();
       if (!savePlaces()) {
         Object.assign(place, previous);
@@ -1753,7 +1790,7 @@
         note,
         favorite,
         status,
-        address: state.draft.address || '',
+        address: address,
         lat: state.draft.lat,
         lng: state.draft.lng,
         createdAt: Date.now(),
@@ -2055,7 +2092,10 @@
      nome/indirizzo con la geocodifica Nominatim.
      ------------------------------------------------------------------ */
 
-  const SHARE_URL_RE = /(?:https?:\/\/|geo:)[^\s<>"']+/gi;
+  // L'apostrofo è ammesso negli URL: molti nomi Google lo contengono
+  // (".../place/Ristorante+Colibri'/@44.6,10.3"). La punteggiatura finale
+  // viene comunque tolta da cleanSharedUrl().
+  const SHARE_URL_RE = /(?:https?:\/\/|geo:)[^\s<>"]+/gi;
 
   function cleanSharedUrl(value) {
     return String(value || '').replace(/[.,;:!?)\]}"']+$/g, '');
@@ -2184,13 +2224,18 @@
 
     if (coords) {
       showToast('Luogo condiviso pronto: controlla e salva', { tone: 'success' });
+      const placeName = nameFromUrl || hints.name;
       setTimeout(() => {
         focusMapOn(coords.lat, coords.lng);
         startAddPlace({
           lat: coords.lat,
           lng: coords.lng,
-          name: nameFromUrl || hints.name,
-          address: hints.address,
+          name: placeName,
+          // Se il testo condiviso non ha una riga indirizzo, l'indirizzo
+          // può essere accodato al nome: va nel campo indirizzo, non perso.
+          address: hints.address
+            || addressFromLinkName(placeName)
+            || addressFromLinkName(hints.name),
         });
       }, 350);
       return;
@@ -2206,7 +2251,7 @@
           lat: found.lat,
           lng: found.lng,
           name: hints.name,
-          address: hints.address || found.address,
+          address: hints.address || addressFromLinkName(hints.name) || found.address,
         });
         showToast('Luogo trovato: controlla e salva', { tone: 'success' });
         return;
@@ -4011,6 +4056,19 @@
     $('btnFavorite').addEventListener('click', () => setFavoriteUI(!isFavoriteSelected()));
     $('placeForm').addEventListener('submit', submitForm);
     $('placeName').addEventListener('input', () => { if ($('placeName').value.trim()) $('nameError').hidden = true; });
+    // L'indirizzo corretto a mano vince sul geocoding: si blocca finché non
+    // si sposta il punto sulla mappa.
+    $('placeAddress').addEventListener('input', () => {
+      const value = $('placeAddress').value.trim();
+      if (state.draft) {
+        state.draft.address = value;
+        state.draft.addressLocked = true;
+      }
+      // Invalida un reverse geocoding già in corso: non deve sovrascrivere
+      // quanto appena digitato.
+      geocodeSeq++;
+      $('coordsAddress').textContent = value || 'Posizione pronta';
+    });
     $('btnNewCategory').addEventListener('click', () => openNewCategoryModal());
     $('btnDeletePlace').addEventListener('click', () => {
       const place = getPlace(state.editingId);
@@ -4065,8 +4123,12 @@
         // le coordinate, così resta anche se la ricerca non riesce.
         if (result.name) fillPlaceNameFromLink(result.name);
         if (Number.isFinite(result.lat) && Number.isFinite(result.lng)) {
-          setDraftCoords(result.lat, result.lng, '');
-          geocodeDraft();
+          // Se Google riporta anche l'indirizzo nel link, si usa quello:
+          // il reverse geocoding di OSM può scegliere il civico vicino
+          // sbagliato (es. 18 invece di 24).
+          const importedAddress = addressFromLinkName(result.name);
+          setDraftCoords(result.lat, result.lng, importedAddress);
+          if (!importedAddress) geocodeDraft();
           showToast('Coordinate importate', { tone: 'success' });
           return;
         }
@@ -4077,7 +4139,13 @@
           showToast('Cerco "' + displayName + '"…');
           const found = await forwardGeocodePlace(result.name);
           if (found) {
-            setDraftCoords(found.lat, found.lng, found.address || '');
+            // L'indirizzo scritto da Google nel link resta la fonte
+            // preferita rispetto a quello restituito da Nominatim.
+            setDraftCoords(
+              found.lat,
+              found.lng,
+              addressFromLinkName(result.name) || found.address || ''
+            );
             fillPlaceNameFromLink(result.name);
             showToast('Luogo trovato: controlla e salva', { tone: 'success' });
             return;
