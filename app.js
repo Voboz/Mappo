@@ -1296,7 +1296,7 @@
     $('placeForm').reset();
     $('nameError').hidden = true;
     $('gmapsError').hidden = true;
-    $('placeName').value = name;
+    $('placeName').value = shortPlaceName(name);
     $('placeNote').value = '';
     $('placeStatus').value = '';
     setFavoriteUI(false);
@@ -1391,12 +1391,21 @@
     geocodeSeq++;
   }
 
+  // Google mette "Nome, Via …, CAP Città, Paese" nel percorso e in ?q=:
+  // nel campo nome va solo la parte prima della prima virgola.
+  function shortPlaceName(value) {
+    const text = cleanText(value, 120);
+    const comma = text.indexOf(',');
+    return comma > 0 ? cleanText(text.slice(0, comma), 120) : text;
+  }
+
   // Il nome ricavato dal link va compilato subito, anche quando la posizione
   // non è ancora disponibile: così non si perde e l'utente deve solo
   // confermare il punto sulla mappa.
   function fillPlaceNameFromLink(name) {
-    if (!name || $('placeName').value.trim()) return;
-    $('placeName').value = name;
+    const display = shortPlaceName(name);
+    if (!display || $('placeName').value.trim()) return;
+    $('placeName').value = display;
     if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
       $('placeCategory').value = state.settings.lastCategory || 'altro';
     }
@@ -1487,15 +1496,40 @@
     }
   }
 
-  // Geocodifica un nome di luogo provando prima la stringa completa
-  // (nome + indirizzo) e poi il solo nome: un link con l'indirizzo a volte
-  // non è risolvibile da Nominatim, mentre il nome da solo sì.
+  // Segmenti di "Nome, Via …, CAP Città, Paese".
+  function queryParts(value) {
+    return cleanText(value, 300).split(',').map((part) => part.trim()).filter(Boolean);
+  }
+
+  // Località ricavabile dall'indirizzo: "43029 Traversetolo PR" → "Traversetolo".
+  function queryLocality(parts) {
+    for (const part of parts) {
+      const match = part.match(/^\d{4,5}\s+(.+)$/);
+      if (match) {
+        const place = match[1].trim().replace(/\s+[A-Z]{2}$/, '').trim();
+        if (place) return place;
+      }
+    }
+    if (parts.length >= 3) {
+      const guess = parts[parts.length - 2].replace(/\s+[A-Z]{2}$/, '').trim();
+      if (guess && !/\d/.test(guess)) return guess;
+    }
+    return '';
+  }
+
+  // Geocodifica un link con solo il nome: prima la stringa completa
+  // (nome + indirizzo), poi nome + località. Il solo nome non basta: per
+  // "Ristorante Colibri'" prenderebbe il primo omonimo, anche all'estero.
   async function forwardGeocodePlace(query) {
     const full = cleanText(query, 300);
     if (!full) return null;
+    const parts = queryParts(full);
+    const name = parts.length > 1 ? shortPlaceName(full) : '';
+    const locality = queryLocality(parts);
     const candidates = [full];
-    const nameOnly = cleanText(full.split(',')[0], 120);
-    if (nameOnly.length >= 3 && fold(nameOnly) !== fold(full)) candidates.push(nameOnly);
+    if (name && locality && fold(name + ', ' + locality) !== fold(full)) {
+      candidates.push(name + ', ' + locality);
+    }
     for (const candidate of candidates) {
       const found = await forwardGeocode(candidate);
       if (found) return found;
@@ -1931,6 +1965,10 @@
     const timer = setTimeout(() => controller.abort(), SHORT_LINK_TIMEOUT);
     try {
       const res = await fetch(joined, {
+        // La risposta del Worker non deve restare nella cache HTTP: una
+        // risoluzione vecchia (o un Worker aggiornato) darebbe coordinate
+        // sbagliate per 24 ore. La cache di sessione è gestita da shortLinkCache.
+        cache: 'no-store',
         signal: controller.signal,
         headers: { Accept: 'application/json, text/plain;q=0.9' },
       });
@@ -2068,7 +2106,7 @@
       }
     }
     const received = lines.join('\n').slice(0, 900);
-    const knownName = cleanText(hints.name || '', 120);
+    const knownName = shortPlaceName(hints.name || '');
     const body = h('div', {},
       h('p', {
         text: knownName
@@ -4035,7 +4073,8 @@
         // Link risolto senza coordinate (c'è solo l'identificativo o il
         // nome del luogo): si cerca la posizione con Nominatim.
         if (result.name) {
-          showToast('Cerco "' + result.name + '"…');
+          const displayName = shortPlaceName(result.name);
+          showToast('Cerco "' + displayName + '"…');
           const found = await forwardGeocodePlace(result.name);
           if (found) {
             setDraftCoords(found.lat, found.lng, found.address || '');
@@ -4044,7 +4083,7 @@
             return;
           }
           error.textContent = 'Nome compilato, ma non trovo le coordinate di "'
-            + result.name + '": scegli il punto sulla mappa.';
+            + displayName + '": scegli il punto sulla mappa.';
           error.hidden = false;
           return;
         }
