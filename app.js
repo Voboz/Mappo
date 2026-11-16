@@ -1291,6 +1291,7 @@
       lng: Number.isFinite(lng) ? lng : center.lng,
       address,
       addressLocked: Boolean(address),
+      addressPending: false,
       moved: false,
     };
 
@@ -1321,6 +1322,7 @@
       lng: place.lng,
       address: place.address || '',
       addressLocked: true,
+      addressPending: false,
       moved: false,
     };
     $('placeForm').reset();
@@ -1381,6 +1383,14 @@
     }
   }
 
+  // Indirizzo digitato nel form. Il campo può mancare se il service worker
+  // serve una pagina in cache di una versione precedente: in quel caso la
+  // geocodifica manuale non è disponibile, ma l'app continua a funzionare.
+  function addressFieldValue() {
+    const input = $('placeAddress');
+    return input ? input.value.trim() : '';
+  }
+
   function updateDraftUI() {
     const draft = state.draft;
     if (!draft) {
@@ -1392,8 +1402,9 @@
     $('coordsAddress').textContent = draft.address || 'Posizione pronta';
     // Il campo indirizzo segue la posizione, senza sovrascrivere ciò che
     // l'utente sta scrivendo in quel momento.
-    if (document.activeElement !== $('placeAddress')) {
-      $('placeAddress').value = draft.address || '';
+    const addressInput = $('placeAddress');
+    if (addressInput && document.activeElement !== addressInput) {
+      addressInput.value = draft.address || '';
     }
   }
 
@@ -1405,6 +1416,7 @@
       // Un indirizzo esplicito (link Google o condivisione) è più preciso
       // del reverse geocoding e non deve essere sostituito da OSM.
       addressLocked: Boolean(address),
+      addressPending: false,
       moved: true,
     };
     updateDraftUI();
@@ -1570,6 +1582,37 @@
     return null;
   }
 
+  // Posizione ricavata da un indirizzo scritto a mano: aggiorna le
+  // coordinate del form e sposta la mappa. Serve sia al pulsante "Trova"
+  // sia al salvataggio, così non si salva il centro mappa al posto del
+  // luogo quando l'utente compila solo nome e indirizzo.
+  async function geocodeManualAddress({ quiet = false } = {}) {
+    if (!state.draft) return false;
+    const error = $('addressError');
+    if (error) error.hidden = true;
+    const address = addressFieldValue();
+    if (address.length < 3) {
+      if (error) {
+        error.textContent = 'Scrivi un indirizzo o una località.';
+        error.hidden = false;
+      }
+      return false;
+    }
+    if (!quiet) showToast('Cerco l\'indirizzo…');
+    const found = await forwardGeocodePlace(address);
+    if (!found) {
+      if (error) {
+        error.textContent = 'Indirizzo non trovato: controllalo oppure scegli il punto sulla mappa.';
+        error.hidden = false;
+      }
+      return false;
+    }
+    setDraftCoords(found.lat, found.lng, address);
+    focusMapOn(found.lat, found.lng);
+    if (!quiet) showToast('Posizione trovata sulla mappa', { tone: 'success' });
+    return true;
+  }
+
   async function geocodeDraft() {
     const draft = state.draft;
     if (!draft || draft.addressLocked) return;
@@ -1726,8 +1769,22 @@
 
   /* ------------------- Salvataggio / eliminazione ------------------- */
 
-  function submitForm(event) {
+  // Le coordinate possono dipendere dall'indirizzo digitato: in quel caso
+  // il salvataggio attende la geocodifica. Il flag evita doppi invii.
+  let submitBusy = false;
+
+  async function submitForm(event) {
     event.preventDefault();
+    if (submitBusy) return;
+    submitBusy = true;
+    try {
+      await submitPlace();
+    } finally {
+      submitBusy = false;
+    }
+  }
+
+  async function submitPlace() {
     const name = $('placeName').value.trim();
     if (!name) {
       $('nameError').hidden = false;
@@ -1741,10 +1798,19 @@
       return;
     }
 
+    // Indirizzo scritto a mano e non ancora localizzato: prima si cerca la
+    // posizione, poi si salva. Se non si trova, non si salva il centro
+    // mappa spacciandolo per il luogo. In modifica la posizione esistente
+    // resta quella scelta: si aggiorna solo l'indirizzo.
+    if (!state.editingId && state.draft.addressPending && addressFieldValue()) {
+      const found = await geocodeManualAddress({ quiet: true });
+      if (!found || !state.draft) return;
+    }
+
     const wasEditing = Boolean(state.editingId);
     const categoryId = $('placeCategory').value || 'altro';
     const note = $('placeNote').value.trim();
-    const address = $('placeAddress').value.trim();
+    const address = addressFieldValue();
     state.draft.address = address;
     const favorite = isFavoriteSelected();
     const statusValue = $('placeStatus').value;
@@ -4058,17 +4124,71 @@
     $('placeName').addEventListener('input', () => { if ($('placeName').value.trim()) $('nameError').hidden = true; });
     // L'indirizzo corretto a mano vince sul geocoding: si blocca finché non
     // si sposta il punto sulla mappa.
-    $('placeAddress').addEventListener('input', () => {
-      const value = $('placeAddress').value.trim();
-      if (state.draft) {
-        state.draft.address = value;
-        state.draft.addressLocked = true;
+    const addressInput = $('placeAddress');
+    const addressButton = $('btnGeocodeAddress');
+    // Timer per la geocodifica automatica mentre si digita.
+    let addressAutoTimer = null;
+    const clearAutoTimer = () => {
+      if (addressAutoTimer) {
+        clearTimeout(addressAutoTimer);
+        addressAutoTimer = null;
       }
-      // Invalida un reverse geocoding già in corso: non deve sovrascrivere
-      // quanto appena digitato.
-      geocodeSeq++;
-      $('coordsAddress').textContent = value || 'Posizione pronta';
-    });
+    };
+    if (addressInput) {
+      addressInput.addEventListener('input', () => {
+        const value = addressInput.value.trim();
+        if (state.draft) {
+          state.draft.address = value;
+          state.draft.addressLocked = Boolean(value);
+          // Indirizzo nuovo: le coordinate vanno ricalcolate prima di salvare.
+          state.draft.addressPending = Boolean(value);
+        }
+        // Invalida un reverse geocoding già in corso: non deve sovrascrivere
+        // quanto appena digitato.
+        geocodeSeq++;
+        const error = $('addressError');
+        if (error) error.hidden = true;
+        $('coordsAddress').textContent = value
+          ? "Cerco l'indirizzo…"
+          : 'Posizione pronta';
+        // Geocodifica automatica dopo una pausa nella digitazione.
+        clearAutoTimer();
+        if (value.length >= 3) {
+          addressAutoTimer = setTimeout(async () => {
+            addressAutoTimer = null;
+            // Se l'utente ha continuato a digitare, il valore è cambiato:
+            // la condizione qui sotto evita ricerche su testo parziale.
+            if (addressInput.value.trim() !== value) return;
+            if (addressButton && addressButton.classList.contains('loading')) return;
+            if (addressButton) addressButton.classList.add('loading');
+            try {
+              await geocodeManualAddress({ quiet: true });
+            } finally {
+              if (addressButton) addressButton.classList.remove('loading');
+            }
+          }, 900);
+        }
+      });
+      // Invio nell'indirizzo = "Trova" subito, non aspetta il debounce.
+      addressInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        clearAutoTimer();
+        if (addressButton) addressButton.click();
+      });
+    }
+    if (addressButton) {
+      addressButton.addEventListener('click', async () => {
+        if (addressButton.classList.contains('loading')) return;
+        clearAutoTimer();
+        addressButton.classList.add('loading');
+        try {
+          await geocodeManualAddress();
+        } finally {
+          addressButton.classList.remove('loading');
+        }
+      });
+    }
     $('btnNewCategory').addEventListener('click', () => openNewCategoryModal());
     $('btnDeletePlace').addEventListener('click', () => {
       const place = getPlace(state.editingId);

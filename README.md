@@ -14,7 +14,7 @@ Web App installabile (PWA) per salvare i tuoi posti preferiti, vederli sulla map
 
 ## Cosa sa fare
 
-- **Salva i luoghi** con nome, indirizzo, categoria, nota, preferito, stato e posizione (GPS, mappa o link Google Maps).
+- **Salva i luoghi** con nome, indirizzo, categoria, nota, preferito, stato e posizione (GPS, indirizzo scritto a mano, mappa o link Google Maps).
 - **Mappa OpenFreeMap** con un pin colorato e icona per ogni categoria; i luoghi vicini si raggruppano in un unico segnaposto con il numero e si separano ingrandendo la mappa.
 - **Menu laterale** con tutti i luoghi, filtri per categoria, preferiti, da visitare e visitati, con conteggi.
 - **Vicino a me**: chiede la posizione, mostra la distanza di ogni luogo e ordina dal più vicino; un secondo tocco ripristina l'ordine alfabetico.
@@ -80,7 +80,8 @@ L'app funziona, ma senza HTTPS Chrome non permette l'installazione completa né 
 ## Guida d'uso
 
 - **Aggiungere un luogo**: tocca il **+**, oppure **tieni premuto** su un punto della mappa.
-- **Scegliere la posizione**: “Posizione attuale”, “Scegli sulla mappa” (sposta la mappa e conferma) o incolla un link Google Maps.
+- **Inserirlo manualmente**: apri il **+**, scrivi nome e **indirizzo** e tocca **Trova** (o premi Invio): l'app geocodifica l'indirizzo con Nominatim, aggiorna le coordinate e sposta la mappa. Se salvi senza toccare Trova, la ricerca parte comunque prima di salvare; se l'indirizzo non viene trovato, il luogo non viene salvato a un punto a caso e l'app ti chiede di sceglierlo sulla mappa. La posizione trovata si può sempre correggere con “Scegli sulla mappa”.
+- **Scegliere la posizione**: “Posizione attuale”, “Scegli sulla mappa” (sposta la mappa e conferma), indirizzo digitato a mano o link Google Maps.
 - **Preferiti e stato**: nel form tocca la stella e scegli lo stato; nella lista puoi cambiare entrambi al volo.
 - **Ritrovare un luogo**: apri il menu ☰, cerca per nome o filtra per categoria, preferiti, da visitare e visitati, tocca il luogo per volare sulla mappa.
 - **Vicino a me**: nel menu ☰ tocca **Vicino a me**: l'app chiede il permesso di posizione, calcola la distanza (formula Haversine) e ordina i luoghi dal più vicino. Tocca di nuovo **Più vicini** per disattivare l'ordinamento e tornare all'ordine alfabetico. Se il permesso viene negato o la posizione non è disponibile, un messaggio spiega cosa fare.

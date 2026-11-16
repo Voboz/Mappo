@@ -216,6 +216,16 @@
           </div>
 
           <div class="field">
+            <label for="placeAddress">Indirizzo <span class="optional">(facoltativo)</span></label>
+            <div class="input-row">
+              <input id="placeAddress" name="address" type="text" maxlength="300" placeholder="Es. Via Rotoli, 24, Traversetolo" autocomplete="off" enterkeyhint="search">
+              <button id="btnGeocodeAddress" class="btn small soft" type="button">Trova</button>
+            </div>
+            <p id="addressError" class="field-error" hidden></p>
+            <p class="field-hint">Scrivi l'indirizzo: dopo una breve pausa la ricerca parte da sola e le coordinate e la mappa si aggiornano. Puoi anche toccare <strong>Trova</strong> o premere Invio. Se OpenStreetMap indica un civico diverso da Google Maps, puoi correggerlo.</p>
+          </div>
+
+          <div class="field">
             <div class="label-row">
               <label for="placeCategory">Categoria</label>
               <button id="btnNewCategory" class="link-btn" type="button">
@@ -272,12 +282,6 @@
                 Scegli sulla mappa
               </button>
             </div>
-          </div>
-
-          <div class="field">
-            <label for="placeAddress">Indirizzo <span class="optional">(facoltativo)</span></label>
-            <input id="placeAddress" name="address" type="text" maxlength="300" placeholder="Es. Via Rotoli, 24, Traversetolo" autocomplete="off">
-            <p class="field-hint">Compilato durante l'import. Se OpenStreetMap indica un civico diverso da Google Maps, correggilo qui.</p>
           </div>
 
           <details class="gmaps-box">
