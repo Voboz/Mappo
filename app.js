@@ -1294,6 +1294,7 @@
       addressPending: false,
       moved: false,
     };
+    if ($('btnGeocodeAddress')) $('btnGeocodeAddress').disabled = false;
 
     $('placeForm').reset();
     $('nameError').hidden = true;
@@ -1325,6 +1326,7 @@
       addressPending: false,
       moved: false,
     };
+    if ($('btnGeocodeAddress')) $('btnGeocodeAddress').disabled = true;
     $('placeForm').reset();
     $('nameError').hidden = true;
     $('gmapsError').hidden = true;
@@ -1346,6 +1348,10 @@
         hideSheet();
         state.editingId = null;
         state.draft = null;
+        if (state.addressAutoTimer) {
+          clearTimeout(state.addressAutoTimer);
+          state.addressAutoTimer = null;
+        }
       });
     }
     showSheet();
@@ -1587,7 +1593,10 @@
   // sia al salvataggio, così non si salva il centro mappa al posto del
   // luogo quando l'utente compila solo nome e indirizzo.
   async function geocodeManualAddress({ quiet = false } = {}) {
+    // In modifica l'indirizzo è solo testo: non si sposta il punto.
+    if (state.editingId) return false;
     if (!state.draft) return false;
+    const btn = $('btnGeocodeAddress');
     const error = $('addressError');
     if (error) error.hidden = true;
     const address = addressFieldValue();
@@ -1599,7 +1608,11 @@
       return false;
     }
     if (!quiet) showToast('Cerco l\'indirizzo…');
+    geocodeSeq++;
     const found = await forwardGeocodePlace(address);
+    // Il draft potrebbe essere cambiato (sheet chiuso, punto riposizionato,
+    // testo modificato): il risultato non deve sovrascrivere nulla.
+    if (!state.draft || state.editingId || addressFieldValue() !== address) return false;
     if (!found) {
       if (error) {
         error.textContent = 'Indirizzo non trovato: controllalo oppure scegli il punto sulla mappa.';
@@ -1619,9 +1632,9 @@
     const seq = ++geocodeSeq;
     $('coordsAddress').textContent = 'Recupero indirizzo…';
     const address = await reverseGeocode(draft.lat, draft.lng);
-    // Nel frattempo l'utente può aver scritto l'indirizzo a mano: in quel
-    // caso il risultato del geocoding non deve sostituirlo.
-    if (seq !== geocodeSeq || !state.draft || state.draft.addressLocked) return;
+    // Il draft potrebbe essere stato sostituito (setDraftCoords) nel frattempo:
+    // il risultato va scartato per non sporcare il nuovo draft.
+    if (seq !== geocodeSeq || state.draft !== draft || state.draft.addressLocked) return;
     if (address) state.draft.address = address;
     updateDraftUI();
   }
@@ -4127,11 +4140,12 @@
     const addressInput = $('placeAddress');
     const addressButton = $('btnGeocodeAddress');
     // Timer per la geocodifica automatica mentre si digita.
-    let addressAutoTimer = null;
+    // Tenuto in state per essere annullabile anche da closeSheet.
+    state.addressAutoTimer = null;
     const clearAutoTimer = () => {
-      if (addressAutoTimer) {
-        clearTimeout(addressAutoTimer);
-        addressAutoTimer = null;
+      if (state.addressAutoTimer) {
+        clearTimeout(state.addressAutoTimer);
+        state.addressAutoTimer = null;
       }
     };
     if (addressInput) {
@@ -4148,23 +4162,29 @@
         geocodeSeq++;
         const error = $('addressError');
         if (error) error.hidden = true;
-        $('coordsAddress').textContent = value
-          ? "Cerco l'indirizzo…"
-          : 'Posizione pronta';
+        $('coordsAddress').textContent = state.editingId
+          ? 'Posizione invariata'
+          : (value ? "Cerco l'indirizzo…" : 'Posizione pronta');
         // Geocodifica automatica dopo una pausa nella digitazione.
         clearAutoTimer();
+        // In modifica l'indirizzo è solo testo: non geocodificare.
+        if (state.editingId) return;
+        if (!state.draft) return;
         if (value.length >= 3) {
-          addressAutoTimer = setTimeout(async () => {
-            addressAutoTimer = null;
+          state.addressAutoTimer = setTimeout(async () => {
+            state.addressAutoTimer = null;
             // Se l'utente ha continuato a digitare, il valore è cambiato:
             // la condizione qui sotto evita ricerche su testo parziale.
             if (addressInput.value.trim() !== value) return;
+            if (!state.draft || state.editingId) return;
             if (addressButton && addressButton.classList.contains('loading')) return;
             if (addressButton) addressButton.classList.add('loading');
+            if (addressButton) addressButton.setAttribute('aria-busy', 'true');
             try {
               await geocodeManualAddress({ quiet: true });
             } finally {
               if (addressButton) addressButton.classList.remove('loading');
+              if (addressButton) addressButton.removeAttribute('aria-busy');
             }
           }, 900);
         }
@@ -4179,13 +4199,16 @@
     }
     if (addressButton) {
       addressButton.addEventListener('click', async () => {
+        if (state.editingId) return;
         if (addressButton.classList.contains('loading')) return;
         clearAutoTimer();
         addressButton.classList.add('loading');
+        addressButton.setAttribute('aria-busy', 'true');
         try {
           await geocodeManualAddress();
         } finally {
           addressButton.classList.remove('loading');
+        addressButton.removeAttribute('aria-busy');
         }
       });
     }

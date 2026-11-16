@@ -1047,7 +1047,11 @@ button { cursor: pointer; }
   color: #fff;
   box-shadow: 0 7px 18px rgba(225, 29, 72, .28);
 }
-.btn.loading { opacity: .7; pointer-events: none; }
+.btn:disabled, .btn[disabled] {
+  opacity: .45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 
 .gmaps-box {
   border: 1.5px dashed #cfdad7;
