@@ -1391,6 +1391,17 @@
     geocodeSeq++;
   }
 
+  // Il nome ricavato dal link va compilato subito, anche quando la posizione
+  // non è ancora disponibile: così non si perde e l'utente deve solo
+  // confermare il punto sulla mappa.
+  function fillPlaceNameFromLink(name) {
+    if (!name || $('placeName').value.trim()) return;
+    $('placeName').value = name;
+    if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
+      $('placeCategory').value = state.settings.lastCategory || 'altro';
+    }
+  }
+
   /* --------------------------- Geocodifica --------------------------- */
 
   function sleep(ms) {
@@ -1474,6 +1485,22 @@
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // Geocodifica un nome di luogo provando prima la stringa completa
+  // (nome + indirizzo) e poi il solo nome: un link con l'indirizzo a volte
+  // non è risolvibile da Nominatim, mentre il nome da solo sì.
+  async function forwardGeocodePlace(query) {
+    const full = cleanText(query, 300);
+    if (!full) return null;
+    const candidates = [full];
+    const nameOnly = cleanText(full.split(',')[0], 120);
+    if (nameOnly.length >= 3 && fold(nameOnly) !== fold(full)) candidates.push(nameOnly);
+    for (const candidate of candidates) {
+      const found = await forwardGeocode(candidate);
+      if (found) return found;
+    }
+    return null;
   }
 
   async function geocodeDraft() {
@@ -1786,6 +1813,7 @@
       patterns.push(
         /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/,
         /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/,
+        /[?&](?:q|query|ll|center|destination|daddr)=loc(?::|%3A)(-?\d{1,3}(?:\.\d+)?)(?:,|%2C)\s*(-?\d{1,3}(?:\.\d+)?)/i,
         /[?&](?:q|query|ll|center|destination|daddr)=(-?\d{1,3}(?:\.\d+)?)(?:,|%2C|\+| )\s*(-?\d{1,3}(?:\.\d+)?)/i,
         /geo:(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i
       );
@@ -1860,14 +1888,24 @@
     const match = String(text || '').match(/[?&](?:q|query|destination|daddr)=([^&#]+)/i);
     if (!match) return '';
     try {
-      const value = decodeURIComponent(match[1].replace(/\+/g, ' ')).replace(/\s+/g, ' ').trim();
+      let value = decodeURIComponent(match[1].replace(/\+/g, ' ')).replace(/\s+/g, ' ').trim();
       if (!value) return '';
+      // Un place_id non è un nome: geocodificarlo darebbe risultati casuali.
+      if (/^(?:place_id|ftid|cid):/i.test(value)) return '';
+      // Google usa q=loc:lat,lng per i pin senza nome.
+      if (/^loc:/i.test(value)) value = value.slice(4).trim();
       // Un valore numerico è già stato gestito da parseCoordinates().
       if (/^-?\d{1,3}(?:\.\d+)?\s*[,;]\s*-?\d{1,3}(?:\.\d+)?$/.test(value)) return '';
       return value.slice(0, 120);
     } catch (_) {
       return '';
     }
+  }
+
+  // Nome del luogo ricavabile da qualsiasi link Google: prima il percorso
+  // (/place/Nome, /maps/search/Nome), poi i parametri (?q=Nome).
+  function extractPlaceNameFromLink(text) {
+    return extractPlaceName(text) || extractQueryName(text);
   }
 
   // Trasforma l'URL finale in coordinate; se l'URL ha solo l'identificativo
@@ -1877,7 +1915,7 @@
     if (!/^https?:\/\//i.test(url)) return null;
     const parsed = parseCoordinates(url);
     if (!parsed.error) return { lat: parsed.lat, lng: parsed.lng, name: parsed.name || '' };
-    const name = extractPlaceName(url) || extractQueryName(url);
+    const name = extractPlaceNameFromLink(url);
     return name ? { lat: null, lng: null, name } : null;
   }
 
@@ -1947,9 +1985,11 @@
     // Il link breve può arrivare anche dentro una frase copiata da una chat.
     const shortUrl = isShortMapLink(input) ? String(input).trim() : findShortMapLink(input);
     if (!shortUrl) {
+      // Link completo senza coordinate: il nome è comunque un dato utile,
+      // così il form resta compilato anche se la geocodifica non riesce.
       const text = String(input || '').trim();
-      const queryName = /google\.[a-z.]+\//i.test(text) ? extractQueryName(text) : '';
-      if (queryName) return { name: queryName };
+      const name = /google\.[a-z.]+\//i.test(text) ? extractPlaceNameFromLink(text) : '';
+      if (name) return { name };
       return direct;
     }
 
@@ -2019,7 +2059,7 @@
     };
   }
 
-  function openShareFallback(payload) {
+  function openShareFallback(payload, hints = {}) {
     const lines = [];
     for (const value of [payload.title, payload.text, payload.url]) {
       for (const line of String(value || '').split(/\r?\n/)) {
@@ -2028,13 +2068,22 @@
       }
     }
     const received = lines.join('\n').slice(0, 900);
+    const knownName = cleanText(hints.name || '', 120);
     const body = h('div', {},
-      h('p', { text: 'Non sono riuscito a ricavare il luogo da questa condivisione. Ecco il testo ricevuto:' }),
-      h('p', { class: 'share-received', text: received || 'Nessun testo ricevuto' }),
-      h('p', { text: 'Scegli il punto sulla mappa e completa il nome: potrai controllare tutto prima di salvare.' })
+      h('p', {
+        text: knownName
+          ? 'Ho riconosciuto il nome del luogo, ma non la sua posizione. Scegli il punto sulla mappa: il nome è già compilato.'
+          : 'Non sono riuscito a ricavare il luogo da questa condivisione. Ecco il testo ricevuto:',
+      }),
+      knownName ? null : h('p', { class: 'share-received', text: received || 'Nessun testo ricevuto' }),
+      h('p', {
+        text: knownName
+          ? 'Potrai controllare tutto prima di salvare.'
+          : 'Scegli il punto sulla mappa e completa il nome: potrai controllare tutto prima di salvare.',
+      })
     );
     showModal({
-      title: 'Luogo non riconosciuto',
+      title: knownName ? 'Posizione da scegliere' : 'Luogo non riconosciuto',
       body,
       actions: [
         {
@@ -2042,7 +2091,7 @@
           kind: 'primary',
           onClick: () => {
             closeOverlayThen('modal', () => {
-              startAddPlaceFromCenter();
+              startAddPlace({ name: knownName });
               setTimeout(enterPickMode, 380);
             });
             return false;
@@ -2112,7 +2161,7 @@
     const query = cleanText([hints.name, hints.address].filter(Boolean).join(', '), 300);
     if (query) {
       showToast('Cerco il luogo condiviso…');
-      const found = await forwardGeocode(query);
+      const found = await forwardGeocodePlace(query);
       if (found) {
         focusMapOn(found.lat, found.lng);
         startAddPlace({
@@ -2126,7 +2175,7 @@
       }
     }
 
-    openShareFallback(payload);
+    openShareFallback(payload, hints);
   }
 
   function focusMapOn(lat, lng) {
@@ -3965,10 +4014,8 @@
       if (button.classList.contains('loading')) return;
 
       const shortLink = isShortMapLink(input) || Boolean(findShortMapLink(input));
-      if (shortLink) {
-        button.classList.add('loading');
-        showToast('Risolvo il link breve…');
-      }
+      button.classList.add('loading');
+      if (shortLink) showToast('Risolvo il link breve…');
       try {
         const result = await parseCoordinatesSmart(input);
         if (result.error) {
@@ -3976,35 +4023,28 @@
           error.hidden = false;
           return;
         }
+        // Il nome del link è già un risultato: si compila prima di cercare
+        // le coordinate, così resta anche se la ricerca non riesce.
+        if (result.name) fillPlaceNameFromLink(result.name);
         if (Number.isFinite(result.lat) && Number.isFinite(result.lng)) {
           setDraftCoords(result.lat, result.lng, '');
-          if (result.name && !$('placeName').value.trim()) {
-            $('placeName').value = result.name;
-            if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
-              $('placeCategory').value = state.settings.lastCategory || 'altro';
-            }
-          }
           geocodeDraft();
           showToast('Coordinate importate', { tone: 'success' });
           return;
         }
-        // Link risolto senza coordinate (c'è solo l'identificativo del
-        // luogo): si cerca il nome con Nominatim.
+        // Link risolto senza coordinate (c'è solo l'identificativo o il
+        // nome del luogo): si cerca la posizione con Nominatim.
         if (result.name) {
           showToast('Cerco "' + result.name + '"…');
-          const found = await forwardGeocode(result.name);
+          const found = await forwardGeocodePlace(result.name);
           if (found) {
             setDraftCoords(found.lat, found.lng, found.address || '');
-            if (!$('placeName').value.trim()) {
-            $('placeName').value = result.name;
-            if (!$('placeCategory').value || !state.categories.some((c) => c.id === $('placeCategory').value)) {
-              $('placeCategory').value = state.settings.lastCategory || 'altro';
-            }
-          }
-          showToast('Luogo trovato: controlla e salva', { tone: 'success' });
+            fillPlaceNameFromLink(result.name);
+            showToast('Luogo trovato: controlla e salva', { tone: 'success' });
             return;
           }
-          error.textContent = 'Riconosciuto "' + result.name + '" ma non trovo la posizione: scegli il punto sulla mappa.';
+          error.textContent = 'Nome compilato, ma non trovo le coordinate di "'
+            + result.name + '": scegli il punto sulla mappa.';
           error.hidden = false;
           return;
         }

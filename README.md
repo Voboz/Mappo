@@ -94,7 +94,7 @@ L'app funziona, ma senza HTTPS Chrome non permette l'installazione completa né 
 
 ### Link Google Maps supportati
 
-Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`), l'app lo cerca con Nominatim.
+Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`, `/maps/place/Nome/...` o `/maps/search/Nome`), il nome viene compilato subito e l'app cerca le coordinate con Nominatim. Se la ricerca non trova nulla, il nome resta compilato e ti basta scegliere il punto sulla mappa.
 
 I link brevi non contengono le coordinate: le ha solo la pagina di destinazione, e il browser non può leggerle (Google non invia header CORS e il redirect resta opaco). L'app li fa quindi seguire dal **Worker Mappo** su Cloudflare (`mappo-link.mappo.workers.dev`), che legge l'header `Location` del redirect e restituisce l'URL finale senza scaricare la pagina di Maps. Il Worker è incluso nel repository: [`worker/link-resolver.js`](worker/link-resolver.js).
 
