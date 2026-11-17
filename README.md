@@ -1,7 +1,7 @@
 # Mappo
 
 [![Licenza: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licenza-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENCE)
-[![Versione](https://img.shields.io/badge/versione-1.7.0-teal.svg)](sw.js)
+[![Versione](https://img.shields.io/badge/versione-1.8.0-teal.svg)](sw.js)
 [![PWA](https://img.shields.io/badge/PWA-installabile-green.svg)](manifest.webmanifest)
 
 Web App installabile (PWA) per salvare i tuoi posti preferiti, vederli sulla mappa e ritrovarli in un attimo. Pensata per il telefono, funziona anche offline.
@@ -80,7 +80,7 @@ L'app funziona, ma senza HTTPS Chrome non permette l'installazione completa né 
 ## Guida d'uso
 
 - **Aggiungere un luogo**: tocca il **+**, oppure **tieni premuto** su un punto della mappa.
-- **Inserirlo manualmente**: apri il **+**, scrivi nome e **indirizzo** e tocca **Trova** (o premi Invio): l'app geocodifica l'indirizzo con Nominatim, aggiorna le coordinate e sposta la mappa. Se salvi senza toccare Trova, la ricerca parte comunque prima di salvare; se l'indirizzo non viene trovato, il luogo non viene salvato a un punto a caso e l'app ti chiede di sceglierlo sulla mappa. La posizione trovata si può sempre correggere con “Scegli sulla mappa”.
+- **Inserirlo manualmente**: apri il **+**, scrivi nome e **indirizzo** e tocca **Trova** (o premi Invio): l'app cerca l'indirizzo con Photon (OpenStreetMap) e, se non basta, con Nominatim; accetta il risultato solo se comune e CAP coincidono con quelli scritti, aggiorna le coordinate e sposta la mappa. Se salvi senza toccare Trova, la ricerca parte comunque prima di salvare; se l'indirizzo non viene trovato (o risulta in un altro comune), il luogo non viene salvato a un punto a caso e l'app ti chiede di sceglierlo sulla mappa. La posizione trovata si può sempre correggere con “Scegli sulla mappa”.
 - **Scegliere la posizione**: “Posizione attuale”, “Scegli sulla mappa” (sposta la mappa e conferma), indirizzo digitato a mano o link Google Maps.
 - **Preferiti e stato**: nel form tocca la stella e scegli lo stato; nella lista puoi cambiare entrambi al volo.
 - **Ritrovare un luogo**: apri il menu ☰, cerca per nome o filtra per categoria, preferiti, da visitare e visitati, tocca il luogo per volare sulla mappa.
@@ -89,13 +89,13 @@ L'app funziona, ma senza HTTPS Chrome non permette l'installazione completa né 
 - **Modificare/eliminare**: apri il pin → Modifica / Elimina (con annullamento).
 - **Esportare**: menu ☰ → **Esporta** e scegli il formato (JSON, GeoJSON, KML, GPX, CSV).
 - **Importare**: menu ☰ → **Importa** e scegli un file JSON, GeoJSON, KML, GPX o CSV. L'app mostra un'anteprima: puoi unire ai luoghi esistenti o sostituirli. I duplicati (stesso nome e coordinate entro 60 m) vengono saltati.
-- **CSV senza coordinate**: se il file non contiene latitudine e longitudine (tipico delle liste di Google Takeout), l'app cerca ogni luogo con Nominatim, una richiesta al secondo. A fine importazione mostra quanti luoghi sono stati importati, duplicati o saltati.
+- **CSV senza coordinate**: se il file non contiene latitudine e longitudine (tipico delle liste di Google Takeout), l'app cerca ogni luogo con Photon e, se serve, con Nominatim, una richiesta al secondo. A fine importazione mostra quanti luoghi sono stati importati, duplicati o saltati.
 - **Condividere**: menu ☰ → **Condividi**. Scegli **Condividi un file** (stessi formati dell'export: sui dispositivi compatibili si apre il menu di condivisione, altrimenti il file viene scaricato) oppure **Condividi un link**, che comprime i luoghi nell'URL. Chi apre il link trova l'anteprima e può unire o sostituire i suoi luoghi. Se la lista è troppo grande per un link, l'app propone la condivisione via file.
 - **Ricevere un luogo**: in Google Maps (o in un'altra app) tocca **Condividi** e scegli **Mappo**. L'app estrae il nome e l'indirizzo dal testo condiviso: se il link contiene le coordinate le usa subito, se è un link breve lo risolve, altrimenti cerca il nome con Nominatim. Nel campo nome finisce solo il nome del luogo: l'eventuale indirizzo che Google accoda dopo la prima virgola passa al campo **Indirizzo**, che puoi controllare e correggere. Il form "Nuovo luogo" si apre già compilato con il punto sulla mappa; controlla e conferma tu. Se non riesce a riconoscere il luogo, mostra il testo ricevuto e ti fa scegliere il punto a mano.
 
 ### Link Google Maps supportati
 
-Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`, `/maps/place/Nome/...` o `/maps/search/Nome`), il nome viene compilato subito e l'app cerca le coordinate con Nominatim. Nel campo nome va solo la parte prima della prima virgola: Google scrive "Nome, Via …, CAP Città, Paese" e l'indirizzo non serve lì. Quell'indirizzo, se presente, viene però conservato nel campo **Indirizzo**: è il testo di Google, quindi batte il civico ricavato da OpenStreetMap, che per lo stesso luogo può indicare un numero vicino (es. 18 al posto di 24). Se il link non riporta l'indirizzo, l'app lo ricava col reverse geocoding e lo mostra nel form, dove puoi correggerlo prima di salvare. La ricerca delle coordinate prova prima la stringa completa e poi "nome, località" ricavata dall'indirizzo: il solo nome non basta, perché per un nome comune come "Ristorante Colibri'" Nominatim può restituire il primo omonimo, anche in un altro Paese. Se la ricerca non trova nulla, il nome resta compilato e ti basta scegliere il punto sulla mappa.
+Sono riconosciuti i link completi (`google.com/maps/place/...`, `?q=lat,lng`, `@lat,lng`, `!3d…!4d…`), le coordinate `45.4642, 9.1900`, i link `geo:` e i **link brevi** (`maps.app.goo.gl`, `goo.gl/maps`, `g.co/maps`). Se il link contiene solo il nome del luogo (`?q=Piazza+Navona,+Roma`, `/maps/place/Nome/...` o `/maps/search/Nome`), il nome viene compilato subito e l'app cerca le coordinate con Photon e, se serve, Nominatim: accetta il risultato solo se il comune (e il CAP, quando c'è) coincidono con quelli del link, altrimenti ti chiede di scegliere il punto sulla mappa invece di piazzare il pin in un omonimo lontano. Un link che contiene **solo il nome**, senza indirizzo né località, non viene geocodificato: sarebbe un tiro al bersaglio. Nel campo nome va solo la parte prima della prima virgola: Google scrive "Nome, Via …, CAP Città, Paese" e l'indirizzo non serve lì. Quell'indirizzo, se presente, viene però conservato nel campo **Indirizzo**: è il testo di Google, quindi batte il civico ricavato da OpenStreetMap, che per lo stesso luogo può indicare un numero vicino (es. 18 al posto di 24). Se il link non riporta l'indirizzo, l'app lo ricava col reverse geocoding e lo mostra nel form, dove puoi correggerlo prima di salvare. La ricerca delle coordinate prova prima la stringa completa, poi l'indirizzo senza il nome del locale, poi "nome, località": il solo nome non basta, perché per un nome comune come "Ristorante Colibri'" Photon può restituire il primo omonimo, anche in un altro Paese. Se la ricerca non trova nulla, il nome resta compilato e ti basta scegliere il punto sulla mappa.
 
 I link brevi non contengono le coordinate: le ha solo la pagina di destinazione, e il browser non può leggerle (Google non invia header CORS e il redirect resta opaco). L'app li fa quindi seguire dal **Worker Mappo** su Cloudflare (`mappo-link.mappo.workers.dev`), che legge l'header `Location` del redirect e restituisce l'URL finale senza scaricare la pagina di Maps. Il Worker è incluso nel repository: [`worker/link-resolver.js`](worker/link-resolver.js).
 
@@ -146,7 +146,7 @@ robots.txt               regole per i crawler
 - **Mappe**: stile vettoriale OpenFreeMap (OpenMapTiles/OpenStreetMap) con attribuzione obbligatoria. Per un uso intensivo o commerciale valuta un'istanza dedicata o il self-hosting.
 - **Dati**: `localStorage` del browser. Cancellando i dati del sito si perdono i luoghi: usa l'export. Le chiavi sono volutamente quelle del vecchio nome (`ldc.*`): cambiarle farebbe perdere i luoghi già salvati.
 - **Importazione**: massimo 5 MB e 5000 voci per file; i duplicati (stesso nome entro 60 m) vengono saltati.
-- **Indirizzi**: geocodifica inversa tramite Nominatim (OpenStreetMap) solo quando serve, con richieste limitate a circa una al secondo. Se il link importato riporta già l'indirizzo scritto da Google, quello ha la precedenza: il civico di OpenStreetMap può differire da quello di Google Maps (a volte ci sono due civici a pochi metri, es. 18 e 24). L'indirizzo nel form è modificabile e viene salvato così com'è.
+- **Indirizzi**: ricerca diretta con Photon (OpenStreetMap) e riserva su Nominatim, geocodifica inversa con Nominatim solo quando serve, con richieste limitate a circa una al secondo. Un risultato viene usato solo se il comune e, quando presente, il CAP coincidono con quelli della richiesta: meglio «non trovato» (e scelta manuale del punto) che un pin in un altro comune. Se il link importato riporta già l'indirizzo scritto da Google, quello ha la precedenza: il civico di OpenStreetMap può differire da quello di Google Maps (a volte ci sono due civici a pochi metri, es. 18 e 24). L'indirizzo nel form è modificabile e viene salvato così com'è.
 - **Offline**: interfaccia e tessere già caricate restano disponibili; le zone mai visitate richiedono connessione. Stile, TileJSON, sprite e font della mappa non vengono mai sfrattati dalla cache.
 - **Export CSV**: le celle che iniziano con `=`, `+`, `-` o `@` vengono prefissate con un apostrofo, così i fogli di calcolo non le interpretano come formule.
 - **Link condivisi**: i dati sono compressi, **non cifrati**: chi possiede il link può leggerli. Il token sta nel frammento (`#`), quindi non finisce nei log del server.
@@ -161,7 +161,7 @@ Mappo non ha account, backend, cookie, analytics o pubblicità. I luoghi, le not
 Escono dal dispositivo solo le richieste tecniche necessarie:
 
 - tessere della mappa verso **OpenFreeMap** (IP e zona visualizzata);
-- indirizzi e coordinate verso **Nominatim/OpenStreetMap**, quando salvi un indirizzo o importi un CSV senza coordinate;
+- indirizzi e nomi dei luoghi verso **Photon/Komoot** quando cerchi una posizione, e verso **Nominatim/OpenStreetMap** quando salvi un indirizzo, ricavi un indirizzo da un punto o importi un CSV senza coordinate;
 - il solo **link breve** verso il **Worker Mappo** su Cloudflare, e solo quando serve;
 - i log tecnici del fornitore di hosting, se pubblichi l'app.
 
@@ -191,4 +191,4 @@ Dopo aver modificato i file e ripubblicato, cambia `VERSION` in `sw.js` (es. da 
 
 ---
 
-Versione 1.7.0 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Nominatim/OpenStreetMap.
+Versione 1.8.0 · Mappo · i luoghi restano salvati solo sul tuo dispositivo; mappa OpenFreeMap, indirizzi tramite Photon e Nominatim/OpenStreetMap.

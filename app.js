@@ -51,6 +51,9 @@
   const OPENFREEMAP_ATTR = '© <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> dati <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
   const NOMINATIM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
   const NOMINATIM_SEARCH = 'https://nominatim.openstreetmap.org/search';
+  // Photon (komoot) è il geocoder principale della ricerca diretta: su
+  // OpenStreetMap trova gli indirizzi molto meglio del search di Nominatim.
+  const PHOTON_SEARCH = 'https://photon.komoot.io/api/';
   const ITALY_CENTER = [42.5, 12.5];
   // Distanza (in pixel) sotto la quale due pin vengono riuniti in un cluster.
   // Aumentando lo zoom i pin si allontanano sullo schermo e i cluster si
@@ -58,7 +61,12 @@
   const CLUSTER_RADIUS = 60;
 
   const GEO_OPTIONS = { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 };
-  const GEOCODE_INTERVAL = 1100; // Nominatim: max 1 richiesta al secondo
+  // Photon e Nominatim chiedono di non superare circa una richiesta al secondo.
+  const GEOCODE_INTERVAL = 1100;
+  const GEOCODE_TIMEOUT = 8000;
+  // Senza comune né CAP l'indirizzo è ambiguo: si accetta il risultato solo
+  // se è vicino a ciò che l'utente sta guardando sulla mappa.
+  const GEOCODE_NEAR_METERS = 50000;
   const DEDUPE_METERS = 60;
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
   // Tetto sul numero di voci: un file valido ma enorme (elenco Takeout)
@@ -1486,65 +1494,285 @@
 
   // Serializza le richieste: evita che due geocodifiche concorrenti aggirino il rate limit.
   function reverseGeocode(lat, lng) {
-    const task = geocodeChain.then(() => reverseGeocodeNow(lat, lng));
-    geocodeChain = task.then(() => undefined, () => undefined);
-    return task;
+    return reverseGeocodeNow(lat, lng);
   }
 
   async function reverseGeocodeNow(lat, lng) {
-    const wait = Math.max(0, GEOCODE_INTERVAL - (Date.now() - lastGeocodeAt));
-    if (wait) await sleep(wait);
-    lastGeocodeAt = Date.now();
-
     const url = NOMINATIM_REVERSE + '?format=jsonv2&lat=' + lat + '&lon=' + lng
       + '&zoom=18&addressdetails=1&accept-language=it';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
-    try {
-      const res = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
-      if (!res.ok) return '';
-      const data = await res.json();
-      return formatAddress(data);
-    } catch (_) {
-      return '';
-    } finally {
-      clearTimeout(timer);
-    }
+    const data = await serializeGeocode(async () => {
+      await waitGeocodeSlot();
+      return fetchJson(url);
+    });
+    return data ? formatAddress(data) : '';
   }
 
-  // Ricerca diretta (nome/indirizzo) usata dall'import CSV senza coordinate.
-  function forwardGeocode(query) {
-    const task = geocodeChain.then(() => forwardGeocodeNow(query));
-    geocodeChain = task.then(() => undefined, () => undefined);
-    return task;
+  /* --------------------- Ricerca diretta (geocoding) -------------------
+     Photon (komoot) è il primo tentativo: sugli stessi dati OpenStreetMap
+     trova gli indirizzi italiani molto meglio del search di Nominatim, che
+     tende a restituire il primo risultato "plausibile" anche in un altro
+     comune (es. "Piazza Garibaldi 1, Parma" → Soragna, 30 km fuori strada).
+     Nominatim resta come riserva e per la geocodifica inversa.
+     Nessun risultato viene accettato alla cieca: il comune (e il CAP, se
+     scritto) devono coincidere con quelli richiesti. Se non coincidono si
+     preferisce dire "non trovato" e lasciare scelto il punto a mano.
+     ------------------------------------------------------------------- */
+
+  const STREET_PREFIX_RE = /^(?:via|viale|v\.le|piazza|p\.zza|piazzale|corso|c\.so|vicolo|strada|str\.|largo|lungo|lungomare|salita|discesa|contrada|rotonda|traversa|borgo|rione|frazione|localit[àa]|loc\.|zona)\b/i;
+
+  // Parole che non identificano una via né un comune: servono solo a
+  // confrontare "Strada Luigi Carlo Farini" con "Via Farini".
+  const ADDRESS_STOPWORDS = new Set([
+    'via', 'viale', 'vle', 'piazza', 'pza', 'piazzale', 'corso', 'cso',
+    'vicolo', 'strada', 'str', 'largo', 'lungo', 'lungomare', 'salita',
+    'discesa', 'contrada', 'rotonda', 'traversa', 'borgo', 'rione',
+    'frazione', 'localita', 'loc', 'zona', 'della', 'delle', 'dei', 'degli',
+    'del', 'di', 'da', 'san', 'santa', 'santo', 'sant', 'santi',
+  ]);
+
+  const COUNTRY_NAMES_RE = /^(?:italia|italy|san marino|vaticano|citt[àa] del vaticano|svizzera|switzerland|francia|france|austria|slovenia|slovenija)$/i;
+
+  // Serializza le richieste: evita che due geocodifiche concorrenti aggirino
+  // il rate limit. Va usato solo attorno alle chiamate di rete.
+  function serializeGeocode(task) {
+    const run = geocodeChain.then(task);
+    geocodeChain = run.then(() => undefined, () => undefined);
+    return run;
   }
 
-  async function forwardGeocodeNow(query) {
-    const text = cleanText(query, 300);
-    if (!text) return null;
+  async function waitGeocodeSlot() {
     const wait = Math.max(0, GEOCODE_INTERVAL - (Date.now() - lastGeocodeAt));
     if (wait) await sleep(wait);
     lastGeocodeAt = Date.now();
+  }
 
-    const url = NOMINATIM_SEARCH + '?format=jsonv2&limit=1&addressdetails=1&accept-language=it&q='
-      + encodeURIComponent(text);
+  async function fetchJson(url, timeout = GEOCODE_TIMEOUT) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const res = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
       if (!res.ok) return null;
-      const data = await res.json();
-      if (!Array.isArray(data) || data.length === 0) return null;
-      const first = data[0];
-      const lat = Number(first.lat);
-      const lng = Number(first.lon);
-      if (!validLatLng(lat, lng)) return null;
-      return { lat, lng, address: formatAddress(first) };
+      return await res.json();
     } catch (_) {
       return null;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // "Via Farini 1" → { street: "Via Farini", civic: "1" }.
+  function queryStreetAndCivic(part) {
+    const match = part.match(/^(.+?)[\s,]+(\d{1,5}(?:[\/-]?[a-z])?)$/i);
+    if (!match || !/[a-z]/i.test(match[1]) || /^\d{5}$/.test(part.trim())) return null;
+    return { street: match[1].trim(), civic: match[2].trim() };
+  }
+
+  // Cosa chiede l'utente: comune, CAP, via e civico. Da qui dipendono i
+  // controlli sul risultato: senza questi dati un "indirizzo trovato" non è
+  // verificabile e non va usato per spostare il pin.
+  function geocodeQueryInfo(value) {
+    const text = cleanText(value, 300);
+    const parts = queryParts(text);
+    const locality = queryLocality(parts);
+    const postalMatch = text.match(/(?:^|[\s,])(\d{5})(?:[\s,]|$)/);
+    const postal = postalMatch ? postalMatch[1] : '';
+    let street = '';
+    let civic = '';
+    for (const part of parts) {
+      const found = queryStreetAndCivic(part);
+      if (!found) continue;
+      street = found.street;
+      civic = found.civic;
+      break;
+    }
+    return {
+      text,
+      parts,
+      locality,
+      postal,
+      street,
+      civic,
+      // Solo il nome (niente comune né indirizzo): impossibile capire di
+      // quale omonimo si parla, quindi non si indovina.
+      nameOnly: !locality && !postal && !civic && !street,
+    };
+  }
+
+  function queryTokens(value) {
+    return fold(value)
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(' ')
+      .filter((token) => token.length > 1);
+  }
+
+  function textMatches(wanted, found) {
+    const wantedTokens = queryTokens(wanted);
+    const foundTokens = new Set(queryTokens(found));
+    if (!wantedTokens.length || !foundTokens.size) return false;
+    // Tutte le parole della località richiesta devono comparire: "Roma" non
+    // deve combaciare con "Romagnosi" o "Romano di Lombardia".
+    return wantedTokens.every((token) => foundTokens.has(token));
+  }
+
+  function addressTokens(value) {
+    return queryTokens(value).filter((token) => token.length > 2 && !ADDRESS_STOPWORDS.has(token));
+  }
+
+  function streetSimilarity(wanted, found) {
+    const tokens = addressTokens(wanted);
+    const others = new Set(addressTokens(found));
+    if (!tokens.length || !others.size) return 0;
+    let hits = 0;
+    for (const token of tokens) {
+      if (others.has(token)) hits++;
+    }
+    return hits / tokens.length;
+  }
+
+  // Punteggio di un risultato rispetto alla richiesta. null = da scartare.
+  function scoreCandidate(candidate, info) {
+    let score = 0;
+    if (info.locality) {
+      if (!textMatches(info.locality, candidate.city)) return null;
+      score += 10;
+    }
+    if (info.postal) {
+      if (candidate.postcode && candidate.postcode !== info.postal) return null;
+      if (candidate.postcode === info.postal) score += 5;
+    }
+    if (info.civic && candidate.houseNumber) {
+      const wanted = fold(info.civic);
+      const found = fold(candidate.houseNumber);
+      if (wanted === found) score += 4;
+      else if (found.startsWith(wanted)) score += 2;
+    }
+    if (info.street) {
+      // Una via diversa nello stesso comune darebbe un pin a qualche
+      // centinaio di metri dall'indirizzo scritto: meglio scartarlo.
+      if (candidate.street && streetSimilarity(info.street, candidate.street) === 0) return null;
+      score += Math.round(4 * streetSimilarity(info.street, candidate.street || candidate.name || ''));
+    }
+    if (/^(house|building|address)$/i.test(candidate.type)) score += 1;
+    return score;
+  }
+
+  function pickBestCandidate(candidates, info, { near = null } = {}) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    if (info.nameOnly) return null;
+
+    let best = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const score = scoreCandidate(candidate, info);
+      if (score === null) continue;
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    if (!best) return null;
+
+    // Senza comune né CAP nulla lega il risultato all'indirizzo scritto:
+    // si accetta solo se è vicino a ciò che l'utente sta guardando.
+    if (!info.locality && !info.postal) {
+      if (!near || !validLatLng(near.lat, near.lng)) return null;
+      if (haversine(near.lat, near.lng, best.lat, best.lng) > GEOCODE_NEAR_METERS) return null;
+    }
+    return best;
+  }
+
+  function formatPhotonAddress(props) {
+    const road = cleanText([props.street, props.housenumber].filter(Boolean).join(' ') || props.name || '', 200);
+    return [road, cleanText(props.city || props.district || '', 120),
+      cleanText(props.state || '', 120), cleanText(props.country || '', 120)]
+      .filter(Boolean).join(', ').slice(0, 300);
+  }
+
+  function photonCandidates(data) {
+    const features = data && Array.isArray(data.features) ? data.features : [];
+    return features.map((feature) => {
+      const coords = feature && feature.geometry && feature.geometry.coordinates;
+      if (!Array.isArray(coords)) return null;
+      const lng = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (!validLatLng(lat, lng)) return null;
+      const props = feature.properties || {};
+      return {
+        lat,
+        lng,
+        address: formatPhotonAddress(props),
+        street: cleanText(props.street || props.name || '', 120),
+        houseNumber: cleanText(props.housenumber || '', 20),
+        city: cleanText(props.city || props.district || '', 120),
+        postcode: cleanText(props.postcode || '', 20),
+        type: cleanText(props.type || '', 40),
+      };
+    }).filter(Boolean);
+  }
+
+  function nominatimCandidates(data) {
+    if (!Array.isArray(data)) return [];
+    return data.map((item) => {
+      const lat = Number(item.lat);
+      const lng = Number(item.lon);
+      if (!validLatLng(lat, lng)) return null;
+      const address = item.address || {};
+      return {
+        lat,
+        lng,
+        address: formatAddress(item),
+        street: cleanText(address.road || address.pedestrian || address.footway || address.place || '', 120),
+        houseNumber: cleanText(address.house_number || '', 20),
+        // Solo il comune vero: county/state sono la provincia e la regione e
+        // farebbero passare comuni diversi (Soragna ha county "Parma").
+        city: cleanText(address.city || address.town || address.village || address.municipality || '', 120),
+        postcode: cleanText(address.postcode || '', 20),
+        type: cleanText(item.type || '', 40),
+      };
+    }).filter(Boolean);
+  }
+
+  function candidateResult(candidate) {
+    return { lat: candidate.lat, lng: candidate.lng, address: candidate.address || '' };
+  }
+
+  async function photonLookup(query, { near = null, limit = 10 } = {}) {
+    const text = cleanText(query, 300);
+    if (!text) return null;
+    const info = geocodeQueryInfo(text);
+    if (info.nameOnly) return null;
+    let url = PHOTON_SEARCH + '?q=' + encodeURIComponent(text) + '&limit=' + limit;
+    if (near && validLatLng(near.lat, near.lng)) {
+      url += '&lat=' + Number(near.lat.toFixed(5)) + '&lon=' + Number(near.lng.toFixed(5));
+    }
+    const data = await serializeGeocode(async () => {
+      await waitGeocodeSlot();
+      return fetchJson(url);
+    });
+    const best = pickBestCandidate(photonCandidates(data), info, { near });
+    return best ? candidateResult(best) : null;
+  }
+
+  async function nominatimLookup(query, { near = null } = {}) {
+    const text = cleanText(query, 300);
+    if (!text) return null;
+    const info = geocodeQueryInfo(text);
+    if (info.nameOnly) return null;
+    const url = NOMINATIM_SEARCH + '?format=jsonv2&limit=5&addressdetails=1&accept-language=it&q='
+      + encodeURIComponent(text);
+    const data = await serializeGeocode(async () => {
+      await waitGeocodeSlot();
+      return fetchJson(url);
+    });
+    const best = pickBestCandidate(nominatimCandidates(data), info, { near });
+    return best ? candidateResult(best) : null;
+  }
+
+  // Ricerca diretta (nome/indirizzo): Photon, poi Nominatim come riserva.
+  async function forwardGeocode(query, options = {}) {
+    const found = await photonLookup(query, options);
+    if (found) return found;
+    return nominatimLookup(query, options);
   }
 
   // Segmenti di "Nome, Via …, CAP Città, Paese".
@@ -1561,28 +1789,52 @@
         if (place) return place;
       }
     }
-    if (parts.length >= 3) {
-      const guess = parts[parts.length - 2].replace(/\s+[A-Z]{2}$/, '').trim();
-      if (guess && !/\d/.test(guess)) return guess;
-    }
-    return '';
+    // Ultimo segmento se è un comune ("Via Farini 1, Parma"). Strade e Paesi
+    // non lo sono e non vanno usati come vincolo.
+    const last = parts.length ? parts[parts.length - 1].replace(/\s+[A-Z]{2}$/, '').trim() : '';
+    if (!last || /\d/.test(last) || STREET_PREFIX_RE.test(last) || COUNTRY_NAMES_RE.test(last)) return '';
+    return last;
   }
 
-  // Geocodifica un link con solo il nome: prima la stringa completa
-  // (nome + indirizzo), poi nome + località. Il solo nome non basta: per
-  // "Ristorante Colibri'" prenderebbe il primo omonimo, anche all'estero.
-  async function forwardGeocodePlace(query) {
+  // Varianti da provare, dalla più fedele alla più permissiva.
+  function geocodeVariants(query, info) {
     const full = cleanText(query, 300);
-    if (!full) return null;
-    const parts = queryParts(full);
-    const name = parts.length > 1 ? shortPlaceName(full) : '';
-    const locality = queryLocality(parts);
-    const candidates = [full];
-    if (name && locality && fold(name + ', ' + locality) !== fold(full)) {
-      candidates.push(name + ', ' + locality);
+    const variants = [full];
+    // "Nome, Via …, CAP Città": l'indirizzo da solo è più facile da trovare
+    // del nome dell'esercizio, che Photon non necessariamente conosce. Serve
+    // però una via: "Nome, 43121 Parma" non è un indirizzo e non va cercato.
+    const comma = full.indexOf(',');
+    if (comma > 0) {
+      const rest = cleanText(full.slice(comma + 1), 300);
+      if (rest && geocodeQueryInfo(rest).street) variants.push(rest);
     }
-    for (const candidate of candidates) {
-      const found = await forwardGeocode(candidate);
+    // "Nome, località": il nome da solo prenderebbe il primo omonimo.
+    const name = shortPlaceName(full);
+    if (info.locality && name && fold(name + ', ' + info.locality) !== fold(full)) {
+      variants.push(name + ', ' + info.locality);
+    }
+    const seen = new Set();
+    return variants.filter((variant) => {
+      const key = fold(variant);
+      if (!variant || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  // Geocodifica un link/condivisione con nome e indirizzo. Il solo nome non
+  // basta: per "Ristorante Colibri'" prenderebbe il primo omonimo, anche
+  // all'estero, quindi non viene mai geocodificato senza altri indizi.
+  async function forwardGeocodePlace(query, options = {}) {
+    const info = geocodeQueryInfo(query);
+    if (info.nameOnly) return null;
+    const variants = geocodeVariants(query, info);
+    for (const variant of variants) {
+      const found = await photonLookup(variant, options);
+      if (found) return found;
+    }
+    for (const variant of variants.slice(0, 2)) {
+      const found = await nominatimLookup(variant, options);
       if (found) return found;
     }
     return null;
@@ -1609,7 +1861,7 @@
     }
     if (!quiet) showToast('Cerco l\'indirizzo…');
     geocodeSeq++;
-    const found = await forwardGeocodePlace(address);
+    const found = await forwardGeocodePlace(address, { near: mapCenterOrNull() });
     // Il draft potrebbe essere cambiato (sheet chiuso, punto riposizionato,
     // testo modificato): il risultato non deve sovrascrivere nulla.
     if (!state.draft || state.editingId || addressFieldValue() !== address) return false;
@@ -2323,7 +2575,7 @@
     const query = cleanText([hints.name, hints.address].filter(Boolean).join(', '), 300);
     if (query) {
       showToast('Cerco il luogo condiviso…');
-      const found = await forwardGeocodePlace(query);
+      const found = await forwardGeocodePlace(query, { near: mapCenterOrNull() });
       if (found) {
         focusMapOn(found.lat, found.lng);
         startAddPlace({
@@ -2343,6 +2595,15 @@
   function focusMapOn(lat, lng) {
     if (!map || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
     map.setView([lat, lng], Math.max(map.getZoom(), 15), { animate: false });
+  }
+
+  // Centro della mappa, usato come preferenza (non come vincolo) quando la
+  // ricerca non indica comune né CAP: "Via Farini 1" ha senso vicino a dove
+  // l'utente sta guardando, non in un'altra regione.
+  function mapCenterOrNull() {
+    if (!map) return null;
+    const center = map.getCenter();
+    return validLatLng(center.lat, center.lng) ? { lat: center.lat, lng: center.lng } : null;
   }
 
   /* ------------------------------ Modale ----------------------------- */
@@ -3591,7 +3852,7 @@
       ),
       list,
       pending > 0
-        ? h('p', { class: 'import-note', text: 'I ' + pending + ' luoghi senza coordinate verranno cercati con Nominatim, una richiesta al secondo. Potrebbero servire alcuni minuti.' })
+        ? h('p', { class: 'import-note', text: 'I ' + pending + ' luoghi senza coordinate verranno cercati con Photon e, se serve, con Nominatim, una richiesta al secondo. Potrebbero servire alcuni minuti.' })
         : null,
       duplicatesInFile > 0
         ? h('p', { class: 'import-note', text: 'I duplicati con lo stesso nome e coordinate vicine vengono saltati automaticamente.' })
@@ -3789,7 +4050,7 @@
 
   function openInfoModal() {
     const body = h('div', {},
-      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.7.0'),
+      h('p', {}, h('strong', { text: 'Mappo' }), ' · versione 1.8.0'),
       h('p', { text: 'I luoghi sono salvati solo su questo dispositivo. Esporta un backup ogni tanto per non perderli.' }),
       h('p', { text: 'Puoi condividere un luogo da Google Maps o da un\'altra app: scegli «Mappo» nel menu di condivisione e ritrovalo nel form, già precompilato.' }),
       h('p', { text: 'Tocca «Vicino a me» per vedere la distanza di ogni luogo e ordinarli dal più vicino; tocca di nuovo per tornare all\'ordine alfabetico.' }),
@@ -3850,7 +4111,8 @@
       h('h4', { text: 'Cosa esce dal dispositivo' }),
       h('ul', {},
         h('li', {}, h('strong', { text: 'OpenFreeMap' }), ': richieste delle tessere della mappa (indirizzo IP e zona visualizzata).'),
-        h('li', {}, h('strong', { text: 'Nominatim / OpenStreetMap' }), ': indirizzo, nome del luogo o coordinate, solo quando chiedi di ricavare o cercare un indirizzo.'),
+        h('li', {}, h('strong', { text: 'Photon (komoot)' }), ': indirizzo o nome del luogo quando chiedi di cercare una posizione.'),
+        h('li', {}, h('strong', { text: 'Nominatim / OpenStreetMap' }), ': coordinate quando ricavi l\'indirizzo da un punto, e indirizzo o nome se la ricerca con Photon non dà risultati.'),
         h('li', {}, h('strong', { text: 'Worker Mappo (Cloudflare)' }), ': solo il link breve di Google, e solo quando ne incolli uno, lo ricevi tramite Condividi o importi un file che lo contiene.')
       ),
       h('p', { text: 'I link completi, le note e i luoghi salvati non vengono mai inviati all\'autore. Alcuni fornitori hanno sede fuori dall\'UE e applicano le proprie garanzie per il trasferimento dei dati.' }),
@@ -4280,7 +4542,7 @@
         if (result.name) {
           const displayName = shortPlaceName(result.name);
           showToast('Cerco "' + displayName + '"…');
-          const found = await forwardGeocodePlace(result.name);
+          const found = await forwardGeocodePlace(result.name, { near: mapCenterOrNull() });
           if (found) {
             // L'indirizzo scritto da Google nel link resta la fonte
             // preferita rispetto a quello restituito da Nominatim.

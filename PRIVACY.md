@@ -39,14 +39,15 @@ Le richieste avvengono solo quando usi la funzione corrispondente.
 | Servizio | Quando | Dati inviati | Fornitore |
 | --- | --- | --- | --- |
 | **OpenFreeMap** (`tiles.openfreemap.org`) | sempre, per disegnare la mappa | indirizzo IP, user agent, zona visualizzata (tessere richieste) | OpenFreeMap / OpenStreetMap |
-| **Nominatim** (`nominatim.openstreetmap.org`) | quando apri il modulo di aggiunta su un punto della mappa, cerchi un nome o importi un CSV senza coordinate | coordinate, testo dell'indirizzo o nome del luogo, IP, user agent | OpenStreetMap Foundation |
+| **Photon** (`photon.komoot.io`) | quando cerchi un indirizzo o un luogo | testo dell'indirizzo o nome del luogo, IP, user agent | Komoot GmbH |
+| **Nominatim** (`nominatim.openstreetmap.org`) | quando ricavi l'indirizzo da un punto, cerchi un nome o importi un CSV senza coordinate (e come riserva se Photon non trova nulla) | coordinate, testo dell'indirizzo o nome del luogo, IP, user agent | OpenStreetMap Foundation |
 | **Worker Mappo** (`mappo-link.mappo.workers.dev`) | solo se incolli un link breve Google, lo ricevi tramite Condividi o importi un file che lo contiene | il link breve, IP | Cloudflare (istanza del progetto) |
 
 Note:
 
 - I **link completi** di Google Maps e le coordinate vengono elaborati solo nel browser: non vengono inviati a servizi di risoluzione.
 - I servizi pubblici di risoluzione (`r.jina.ai`, `api.allorigins.win`) **non sono più usati**: l'app usa solo il Worker incluso nel progetto. Se disattivi l'endpoint, i link brevi non vengono più risolti.
-- La ricerca Nominatim invia il testo che digiti (per esempio un indirizzo) e la geocodifica inversa invia le coordinate del punto scelto (anche quando apri il modulo di aggiunta su un punto della mappa).
+- La ricerca Photon invia il testo che digiti (per esempio un indirizzo); se non trova nulla, lo stesso testo viene inviato a Nominatim. La geocodifica inversa invia le coordinate del punto scelto a Nominatim (anche quando apri il modulo di aggiunta su un punto della mappa).
 - Se l'app è pubblicata su GitHub Pages, Netlify o un altro hosting, il fornitore tratta i log tecnici delle richieste (IP, user agent, data e ora) per erogare e proteggere il servizio, secondo la propria informativa.
 
 ### Trasferimenti fuori dall'UE
